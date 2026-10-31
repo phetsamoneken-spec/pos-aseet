@@ -1,0 +1,1444 @@
+/**
+ * Local Data Storage and Business Logic Engine
+ * Manages Persistence, Access Permissions, Budget Calculations, and Audit Logging
+ */
+
+import {
+  Customer,
+  CustomerCondition,
+  Contract,
+  Budget,
+  BudgetTransaction,
+  User,
+  ActivityLog,
+  AppSettings,
+  Team,
+  DashboardMetrics,
+  ContractStatus,
+  BudgetStatus
+} from '../types';
+import { generateSeedData, INITIAL_SETTINGS, INITIAL_USERS } from '../data/seedData';
+
+const STORAGE_KEYS = {
+  CUSTOMERS: 'mkt_customers_v1',
+  CONDITIONS: 'mkt_conditions_v1',
+  CONTRACTS: 'mkt_contracts_v1',
+  BUDGETS: 'mkt_budgets_v1',
+  TRANSACTIONS: 'mkt_transactions_v1',
+  USERS: 'mkt_users_v1',
+  LOGS: 'mkt_activity_logs_v1',
+  SETTINGS: 'mkt_settings_v1',
+  AUTH: 'mkt_current_user_v1'
+};
+
+const memoryCache: Record<string, string> = {};
+
+function safeGetItem(key: string): string | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const item = window.localStorage.getItem(key);
+      if (item !== null) return item;
+    }
+  } catch (e) {
+    console.warn(`localStorage.getItem failed for ${key}, using memory cache`, e);
+  }
+  return memoryCache[key] ?? null;
+}
+
+function safeSetItem(key: string, value: string): void {
+  try {
+    memoryCache[key] = value;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(key, value);
+    }
+  } catch (e) {
+    console.warn(`localStorage.setItem failed for ${key}, saved in memory only`, e);
+  }
+}
+
+function safeRemoveItem(key: string): void {
+  try {
+    delete memoryCache[key];
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(key);
+    }
+  } catch (e) {
+    console.warn(`localStorage.removeItem failed for ${key}`, e);
+  }
+}
+
+class StorageService {
+  private customers: Customer[] = [];
+  private conditions: CustomerCondition[] = [];
+  private contracts: Contract[] = [];
+  private budgets: Budget[] = [];
+  private transactions: BudgetTransaction[] = [];
+  private users: User[] = [];
+  private logs: ActivityLog[] = [];
+  private settings: AppSettings = INITIAL_SETTINGS;
+  private currentUser: User | null = null;
+  private listeners: (() => void)[] = [];
+
+  constructor() {
+    this.init();
+  }
+
+  public init() {
+    try {
+      const storedSettings = safeGetItem(STORAGE_KEYS.SETTINGS);
+      if (storedSettings) {
+        this.settings = { ...INITIAL_SETTINGS, ...JSON.parse(storedSettings) };
+      }
+
+      const storedUsers = safeGetItem(STORAGE_KEYS.USERS);
+      if (storedUsers) {
+        this.users = JSON.parse(storedUsers);
+        // Ensure all users have passwords populated
+        let updated = false;
+        this.users.forEach((u) => {
+          if (!u.password) {
+            u.password = u.username === 'admin' ? 'CHANGE_ME_ADMIN_PASSWORD' : `${u.username}_123`;
+            updated = true;
+          }
+        });
+        if (updated) {
+          safeSetItem(STORAGE_KEYS.USERS, JSON.stringify(this.users));
+        }
+      } else {
+        this.users = [...INITIAL_USERS];
+        safeSetItem(STORAGE_KEYS.USERS, JSON.stringify(this.users));
+      }
+
+      const storedAuth = safeGetItem(STORAGE_KEYS.AUTH);
+      if (storedAuth) {
+        this.currentUser = JSON.parse(storedAuth);
+      } else {
+        // Default login as Admin for instant accessibility
+        this.currentUser = this.users[0];
+        safeSetItem(STORAGE_KEYS.AUTH, JSON.stringify(this.currentUser));
+      }
+
+      const storedCustomers = safeGetItem(STORAGE_KEYS.CUSTOMERS);
+      if (storedCustomers) {
+        this.customers = JSON.parse(storedCustomers);
+        this.conditions = JSON.parse(safeGetItem(STORAGE_KEYS.CONDITIONS) || '[]');
+        this.contracts = JSON.parse(safeGetItem(STORAGE_KEYS.CONTRACTS) || '[]');
+        this.budgets = JSON.parse(safeGetItem(STORAGE_KEYS.BUDGETS) || '[]');
+        this.transactions = JSON.parse(safeGetItem(STORAGE_KEYS.TRANSACTIONS) || '[]');
+        this.logs = JSON.parse(safeGetItem(STORAGE_KEYS.LOGS) || '[]');
+
+        // Synchronize and enforce formula: Annual Budget = Condition Quantity (crates) * Price per Crate
+        const pricePerCrate = this.settings.pricePerCrate || 240000;
+        let hasSyncChanges = false;
+        const cartonSteps = [125, 200, 150, 250, 100, 300, 125, 350, 175, 500];
+
+        this.customers.forEach((cust, idx) => {
+          let cond = this.conditions.find((c) => c.customerCode === cust.code);
+          if (!cond) {
+            cond = {
+              id: `CND-${cust.code}`,
+              customerCode: cust.code,
+              conditionQuantity: cartonSteps[idx % cartonSteps.length],
+              conditionUOM: 'Cartons',
+              conditionProductDescription: 'Beerlao Lager Can 330ml x 24',
+              pricePerUnit: pricePerCrate,
+              updatedAt: '2026-01-05'
+            };
+            this.conditions.push(cond);
+            hasSyncChanges = true;
+          } else if (!cond.conditionQuantity || cond.conditionQuantity <= 0) {
+            cond.conditionQuantity = cartonSteps[idx % cartonSteps.length];
+            cond.pricePerUnit = pricePerCrate;
+            hasSyncChanges = true;
+          }
+
+          const budget = this.budgets.find((b) => b.customerCode === cust.code);
+          if (budget) {
+            const expectedAnnual = cond.conditionQuantity * pricePerCrate;
+            if (budget.annualAmount !== expectedAnnual) {
+              budget.annualAmount = expectedAnnual;
+              budget.remainingAmount = Math.max(0, expectedAnnual - (budget.totalUsed || 0));
+              budget.utilizationPercentage = expectedAnnual > 0
+                ? Math.round(((budget.totalUsed || 0) / expectedAnnual) * 1000) / 10
+                : 0;
+              if (budget.totalUsed > budget.annualAmount) {
+                budget.status = 'EXCEEDED';
+              } else if (budget.utilizationPercentage >= 100) {
+                budget.status = 'CRITICAL_100';
+              } else if (budget.utilizationPercentage >= 80) {
+                budget.status = 'WARNING_80';
+              } else {
+                budget.status = 'NORMAL';
+              }
+              hasSyncChanges = true;
+            }
+          }
+        });
+
+        if (hasSyncChanges) {
+          this.persistAll();
+        }
+      } else {
+        // First run: Generate complete seed dataset of 578 customers across B1-B7
+        this.resetToSeedData();
+      }
+
+      this.recalculateContractStatuses();
+    } catch (e) {
+      console.error('Storage initialization failed, resetting defaults', e);
+      this.resetToSeedData();
+    }
+  }
+
+  public subscribe(listener: () => void) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+
+  private notify() {
+    this.listeners.forEach((listener) => listener());
+  }
+
+  public resetToSeedData() {
+    const seed = generateSeedData();
+    this.customers = seed.customers;
+    this.conditions = seed.conditions;
+    this.contracts = seed.contracts;
+    this.budgets = seed.budgets;
+    this.transactions = seed.transactions;
+    this.users = [...INITIAL_USERS];
+    this.settings = { ...INITIAL_SETTINGS };
+    this.logs = [
+      {
+        id: 'LOG-0001',
+        timestamp: new Date().toISOString(),
+        user: 'system',
+        role: 'ADMIN',
+        team: 'ALL',
+        action: 'INITIALIZE_DATABASE',
+        details: 'Initial import of 578 customers across teams B1-B7 from spreadsheet template.'
+      }
+    ];
+
+    this.persistAll();
+    this.notify();
+  }
+
+  private persistAll() {
+    safeSetItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(this.customers));
+    safeSetItem(STORAGE_KEYS.CONDITIONS, JSON.stringify(this.conditions));
+    safeSetItem(STORAGE_KEYS.CONTRACTS, JSON.stringify(this.contracts));
+    safeSetItem(STORAGE_KEYS.BUDGETS, JSON.stringify(this.budgets));
+    safeSetItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(this.transactions));
+    safeSetItem(STORAGE_KEYS.USERS, JSON.stringify(this.users));
+    safeSetItem(STORAGE_KEYS.LOGS, JSON.stringify(this.logs));
+    safeSetItem(STORAGE_KEYS.SETTINGS, JSON.stringify(this.settings));
+  }
+
+  // --- Auth & Permission System ---
+  public getCurrentUser(): User | null {
+    return this.currentUser;
+  }
+
+  public setCurrentUser(user: User | null) {
+    this.currentUser = user;
+    if (user) {
+      safeSetItem(STORAGE_KEYS.AUTH, JSON.stringify(user));
+      this.logAction('USER_LOGIN', `User ${user.username} logged in (${user.role} - ${user.team})`);
+    } else {
+      safeRemoveItem(STORAGE_KEYS.AUTH);
+    }
+    this.notify();
+  }
+
+  public login(username: string, password?: string): { success: boolean; message?: string } {
+    const user = this.users.find(
+      (u) => u.username.toLowerCase() === username.trim().toLowerCase()
+    );
+    if (!user) {
+      return { success: false, message: 'ບໍ່ພົບຊື່ຜູ້ໃຊ້ນີ້ໃນລະບົບ (Username not found)' };
+    }
+    if (!user.isActive) {
+      return { success: false, message: 'ບັນຊີນີ້ຖືກປິດການໃຊ້ງານແລ້ວ (Account is disabled)' };
+    }
+
+    // Password verification
+    if (password && user.password && password.trim() !== user.password) {
+      return { success: false, message: 'ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ (Incorrect password)' };
+    }
+
+    // Update last login
+    user.lastLogin = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    this.setCurrentUser(user);
+    this.persistUsers();
+    return { success: true };
+  }
+
+  public logout() {
+    if (this.currentUser) {
+      this.logAction('USER_LOGOUT', `User ${this.currentUser.username} logged out`);
+    }
+    this.setCurrentUser(null);
+  }
+
+  public canAccessTeam(team: Team): boolean {
+    if (!this.currentUser) return false;
+    if (this.currentUser.role === 'ADMIN' || this.currentUser.team === 'ALL') return true;
+    return this.currentUser.team === team;
+  }
+
+  public canEditCustomer(customerTeam: Team): boolean {
+    if (!this.currentUser) return false;
+    if (this.currentUser.role === 'ADMIN') return true;
+    return this.currentUser.team === customerTeam;
+  }
+
+  public canManageUsers(): boolean {
+    return this.currentUser?.role === 'ADMIN';
+  }
+
+  // --- Settings ---
+  public getSettings(): AppSettings {
+    return this.settings;
+  }
+
+  public getGoogleSheetsSnapshot() {
+    if (this.currentUser?.role !== 'ADMIN') {
+      throw new Error('Only Admin can sync the complete database to Google Sheets.');
+    }
+    return JSON.parse(JSON.stringify({
+      spreadsheetId: this.settings.spreadsheetId,
+      customers: this.customers,
+      conditions: this.conditions,
+      contracts: this.contracts,
+      budgets: this.budgets,
+      transactions: this.transactions,
+      logs: this.logs,
+      settings: this.settings
+    }));
+  }
+
+  public updateSettings(newSettings: Partial<AppSettings>) {
+    this.settings = { ...this.settings, ...newSettings };
+    const serialized = JSON.stringify(this.settings);
+    safeSetItem(STORAGE_KEYS.SETTINGS, serialized);
+    let persisted = false;
+    try {
+      persisted = typeof window !== 'undefined' && window.localStorage.getItem(STORAGE_KEYS.SETTINGS) === serialized;
+    } catch {
+      // The in-memory save still works, but a reload may lose these settings.
+    }
+    this.logAction('UPDATE_SETTINGS', 'Application settings updated');
+    this.notify();
+    return { persisted };
+  }
+
+  public recalculateBudgetsByPricePerCrate(newPrice: number): { success: boolean; updatedCount: number } {
+    this.settings.pricePerCrate = Number(newPrice);
+    let updatedCount = 0;
+
+    this.conditions.forEach((cond) => {
+      cond.pricePerUnit = newPrice;
+      const budget = this.getBudgetForCustomer(cond.customerCode);
+      if (budget && cond.conditionQuantity > 0) {
+        budget.annualAmount = cond.conditionQuantity * newPrice;
+        budget.remainingAmount = budget.annualAmount - budget.totalUsed;
+        budget.utilizationPercentage = budget.annualAmount > 0
+          ? Math.round((budget.totalUsed / budget.annualAmount) * 1000) / 10
+          : 0;
+
+        if (budget.totalUsed > budget.annualAmount) {
+          budget.status = 'EXCEEDED';
+        } else if (budget.utilizationPercentage >= 100) {
+          budget.status = 'CRITICAL_100';
+        } else if (budget.utilizationPercentage >= 80) {
+          budget.status = 'WARNING_80';
+        } else {
+          budget.status = 'NORMAL';
+        }
+        updatedCount++;
+      }
+    });
+
+    this.persistAll();
+    this.logAction(
+      'RECALCULATE_BUDGETS',
+      `Recalculated budgets for ${updatedCount} customers with price per crate = ${this.formatCurrency(newPrice)}`
+    );
+    this.notify();
+    return { success: true, updatedCount };
+  }
+
+  // --- Currency Formatter ---
+  public formatCurrency(amount: number): string {
+    const formatted = new Intl.NumberFormat('en-US', {
+      maximumFractionDigits: 0
+    }).format(Math.round(amount || 0));
+
+    if (this.settings.currencyPosition === 'before') {
+      return `${this.settings.currencySymbol} ${formatted}`;
+    }
+    return `${formatted} ${this.settings.currencySymbol}`;
+  }
+
+  // --- Contract Status Lifecycle Calculation ---
+  private recalculateContractStatuses() {
+    const now = new Date();
+    const alertThreshold = this.settings.contractAlertDays * 24 * 60 * 60 * 1000;
+
+    let modified = false;
+    this.contracts.forEach((c) => {
+      const expDate = new Date(c.expiringOn);
+      const diffTime = expDate.getTime() - now.getTime();
+
+      let newStatus: ContractStatus = c.status;
+      if (diffTime < 0) {
+        newStatus = 'EXPIRED';
+      } else if (diffTime <= alertThreshold) {
+        newStatus = 'EXPIRING_SOON';
+      } else {
+        const commDate = new Date(c.commencingOn);
+        if (now.getTime() < commDate.getTime()) {
+          newStatus = 'UPCOMING';
+        } else {
+          newStatus = 'ACTIVE';
+        }
+      }
+
+      if (newStatus !== c.status) {
+        c.status = newStatus;
+        modified = true;
+      }
+    });
+
+    if (modified) {
+      localStorage.setItem(STORAGE_KEYS.CONTRACTS, JSON.stringify(this.contracts));
+    }
+  }
+
+  // --- Customers Query & Mutation ---
+  public getCustomers(teamFilter?: Team | 'ALL', search?: string): Customer[] {
+    let list = this.customers;
+
+    // RBAC: If team user, enforce assigned team strictly
+    if (this.currentUser && this.currentUser.role !== 'ADMIN' && this.currentUser.team !== 'ALL') {
+      list = list.filter((c) => c.team === this.currentUser!.team);
+    } else if (teamFilter && teamFilter !== 'ALL') {
+      list = list.filter((c) => c.team === teamFilter);
+    }
+
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(
+        (c) =>
+          c.code.toLowerCase().includes(q) ||
+          c.name.toLowerCase().includes(q) ||
+          c.mde.toLowerCase().includes(q) ||
+          (c.province && c.province.toLowerCase().includes(q))
+      );
+    }
+
+    return list;
+  }
+
+  public getCustomerByCode(code: string): Customer | undefined {
+    return this.customers.find((c) => c.code === code);
+  }
+
+  public getCustomerCondition(customerCode: string): CustomerCondition | undefined {
+    return this.conditions.find((c) => c.customerCode === customerCode);
+  }
+
+  public getCustomerContracts(customerCode: string): Contract[] {
+    return this.contracts
+      .filter((c) => c.customerCode === customerCode)
+      .sort((a, b) => b.cycleNumber - a.cycleNumber);
+  }
+
+  public getActiveContract(customerCode: string): Contract | undefined {
+    const list = this.getCustomerContracts(customerCode);
+    return list.find((c) => c.status === 'ACTIVE' || c.status === 'EXPIRING_SOON') || list[0];
+  }
+
+  public getContractBudget(contractId: string): Budget | undefined {
+    return this.budgets.find((b) => b.contractId === contractId);
+  }
+
+  public getBudgetForCustomer(customerCode: string): Budget | undefined {
+    const contract = this.getActiveContract(customerCode);
+    if (!contract) return undefined;
+    return this.getContractBudget(contract.id);
+  }
+
+  // --- Transactions ---
+  public getTransactions(filters?: {
+    team?: Team | 'ALL';
+    customerCode?: string;
+    contractId?: string;
+    category?: string;
+    search?: string;
+    status?: 'ACTIVE' | 'CANCELLED';
+  }): BudgetTransaction[] {
+    let list = this.transactions;
+
+    // RBAC: Team User restriction
+    if (this.currentUser && this.currentUser.role !== 'ADMIN' && this.currentUser.team !== 'ALL') {
+      list = list.filter((t) => t.team === this.currentUser!.team);
+    } else if (filters?.team && filters.team !== 'ALL') {
+      list = list.filter((t) => t.team === filters.team);
+    }
+
+    if (filters?.customerCode) {
+      list = list.filter((t) => t.customerCode === filters.customerCode);
+    }
+
+    if (filters?.contractId) {
+      list = list.filter((t) => t.contractId === filters.contractId);
+    }
+
+    if (filters?.category && filters.category !== 'ALL') {
+      list = list.filter((t) => t.category === filters.category);
+    }
+
+    if (filters?.status) {
+      list = list.filter((t) => t.status === filters.status);
+    }
+
+    if (filters?.search && filters.search.trim()) {
+      const q = filters.search.trim().toLowerCase();
+      list = list.filter(
+        (t) =>
+          t.id.toLowerCase().includes(q) ||
+          t.customerCode.toLowerCase().includes(q) ||
+          t.customerName.toLowerCase().includes(q) ||
+          t.description.toLowerCase().includes(q) ||
+          (t.invoiceRef && t.invoiceRef.toLowerCase().includes(q))
+      );
+    }
+
+    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  public addTransaction(data: {
+    customerCode: string;
+    category: string;
+    description: string;
+    amount: number;
+    invoiceRef?: string;
+    date: string;
+    allowException?: boolean;
+    exceptionReason?: string;
+  }): { success: boolean; message: string; transaction?: BudgetTransaction } {
+    const customer = this.getCustomerByCode(data.customerCode);
+    if (!customer) {
+      return { success: false, message: 'Customer not found' };
+    }
+
+    // Team validation
+    if (!this.canAccessTeam(customer.team)) {
+      return { success: false, message: 'ທ່ານບໍ່ມີສິດບັນທຶກລາຍຈ່າຍໃຫ້ລູກຄ້າທີມອື່ນ (Unauthorized)' };
+    }
+
+    const contract = this.getActiveContract(data.customerCode);
+    if (!contract) {
+      return { success: false, message: 'ບໍ່ພົບສັນຍາທີ່ກຳລັງດຳເນີນການສຳລັບລູກຄ້ານີ້' };
+    }
+
+    const budget = this.getContractBudget(contract.id);
+    if (!budget) {
+      return { success: false, message: 'ບໍ່ພົບງົບປະມານສຳລັບຮອບສັນຍານີ້' };
+    }
+
+    const amount = Number(data.amount);
+    if (isNaN(amount) || amount <= 0) {
+      return { success: false, message: 'ຈຳນວນເງິນຕ້ອງຫຼາຍກວ່າ 0' };
+    }
+
+    // Budget limitation verification
+    const newUsed = budget.totalUsed + amount;
+    const remaining = budget.annualAmount - newUsed;
+
+    if (remaining < 0) {
+      // Over budget
+      const isAdmin = this.currentUser?.role === 'ADMIN';
+      if (!isAdmin && !data.allowException) {
+        return {
+          success: false,
+          message: `ງົບປະມານບໍ່ພຽງພໍ! ຍັງເຫຼືອພຽງ ${this.formatCurrency(budget.remainingAmount)}, ຕ້ອງການໃຊ້ ${this.formatCurrency(amount)}. ຕ້ອງໄດ້ຮັບການອະນຸມັດພິເສດຈາກ Admin.`
+        };
+      }
+    }
+
+    // Create transaction
+    const txnId = `TXN-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 90 + 10)}`;
+    const newTxn: BudgetTransaction = {
+      id: txnId,
+      date: data.date || new Date().toISOString().slice(0, 10),
+      customerCode: customer.code,
+      customerName: customer.name,
+      team: customer.team,
+      contractId: contract.id,
+      budgetId: budget.id,
+      category: data.category,
+      description: data.description,
+      amount,
+      invoiceRef: data.invoiceRef || '',
+      createdBy: this.currentUser?.username || 'user',
+      createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+      status: 'ACTIVE'
+    };
+
+    // Update budget
+    budget.totalUsed = newUsed;
+    budget.remainingAmount = remaining;
+    budget.utilizationPercentage = Math.round((newUsed / budget.annualAmount) * 1000) / 10;
+
+    if (newUsed > budget.annualAmount) {
+      budget.status = 'EXCEEDED';
+      budget.allowException = true;
+      budget.exceptionReason = data.exceptionReason || 'Admin authorized over-budget expenditure';
+    } else if (budget.utilizationPercentage >= 100) {
+      budget.status = 'CRITICAL_100';
+    } else if (budget.utilizationPercentage >= 80) {
+      budget.status = 'WARNING_80';
+    } else {
+      budget.status = 'NORMAL';
+    }
+
+    budget.updatedAt = new Date().toISOString();
+
+    this.transactions.unshift(newTxn);
+    this.persistAll();
+
+    this.logAction(
+      'ADD_TRANSACTION',
+      `Recorded ${this.formatCurrency(amount)} for ${customer.name} (${customer.code}) [${data.category}]`
+    );
+
+    this.notify();
+    return { success: true, message: 'ບັນທຶກລາຍຈ່າຍສຳເລັດແລ້ວ', transaction: newTxn };
+  }
+
+  public cancelTransaction(
+    txnId: string,
+    reason: string
+  ): { success: boolean; message: string } {
+    const txn = this.transactions.find((t) => t.id === txnId);
+    if (!txn) {
+      return { success: false, message: 'ບໍ່ພົບລາຍການນີ້' };
+    }
+
+    if (txn.status === 'CANCELLED') {
+      return { success: false, message: 'ລາຍການນີ້ຖືກຍົກເລີກແລ້ວ' };
+    }
+
+    if (!this.canAccessTeam(txn.team)) {
+      return { success: false, message: 'ທ່ານບໍ່ມີສິດຍົກເລີກລາຍການນີ້' };
+    }
+
+    // Revert budget
+    const budget = this.budgets.find((b) => b.id === txn.budgetId);
+    if (budget) {
+      budget.totalUsed = Math.max(0, budget.totalUsed - txn.amount);
+      budget.remainingAmount = budget.annualAmount - budget.totalUsed;
+      budget.utilizationPercentage =
+        budget.annualAmount > 0
+          ? Math.round((budget.totalUsed / budget.annualAmount) * 1000) / 10
+          : 0;
+
+      if (budget.totalUsed > budget.annualAmount) {
+        budget.status = 'EXCEEDED';
+      } else if (budget.utilizationPercentage >= 100) {
+        budget.status = 'CRITICAL_100';
+      } else if (budget.utilizationPercentage >= 80) {
+        budget.status = 'WARNING_80';
+      } else {
+        budget.status = 'NORMAL';
+      }
+      budget.updatedAt = new Date().toISOString();
+    }
+
+    txn.status = 'CANCELLED';
+    txn.cancellationReason = reason;
+    txn.cancelledBy = this.currentUser?.username || 'user';
+    txn.cancelledAt = new Date().toISOString();
+
+    this.persistAll();
+    this.logAction(
+      'CANCEL_TRANSACTION',
+      `Cancelled transaction ${txnId} (${this.formatCurrency(txn.amount)}) - Reason: ${reason}`
+    );
+
+    this.notify();
+    return { success: true, message: 'ຍົກເລີກລາຍການສຳເລັດແລ້ວ' };
+  }
+
+  // --- Contract Management & Cycle Renewals ---
+  public addNewContractCycle(data: {
+    customerCode: string;
+    commencingOn: string;
+    expiringOn: string;
+    annualBudget: number;
+    notes?: string;
+  }): { success: boolean; message: string; contract?: Contract } {
+    const customer = this.getCustomerByCode(data.customerCode);
+    if (!customer) {
+      return { success: false, message: 'Customer not found' };
+    }
+
+    if (this.currentUser?.role !== 'ADMIN') {
+      return { success: false, message: 'ສະເພາະ Admin ເທົ່ານັ້ນທີ່ສາມາດສ້າງຮອບສັນຍາໃໝ່ໄດ້' };
+    }
+
+    const existingContracts = this.getCustomerContracts(data.customerCode);
+    const nextCycleNumber = existingContracts.length + 1;
+    const contractId = `CNT-${customer.code}-${String(nextCycleNumber).padStart(2, '0')}`;
+    const budgetId = `BDG-${customer.code}-${String(nextCycleNumber).padStart(2, '0')}`;
+
+    const newContract: Contract = {
+      id: contractId,
+      customerCode: customer.code,
+      customerName: customer.name,
+      team: customer.team,
+      commencingOn: data.commencingOn,
+      expiringOn: data.expiringOn,
+      cycleNumber: nextCycleNumber,
+      status: 'ACTIVE',
+      notes: data.notes || `ສັນຍາຮອບທີ ${nextCycleNumber} ຂອງລູກຄ້າ ${customer.name}`,
+      createdAt: new Date().toISOString()
+    };
+
+    const newBudget: Budget = {
+      id: budgetId,
+      contractId,
+      customerCode: customer.code,
+      team: customer.team,
+      annualAmount: Number(data.annualBudget) || 0,
+      totalUsed: 0,
+      remainingAmount: Number(data.annualBudget) || 0,
+      utilizationPercentage: 0,
+      status: 'NORMAL',
+      updatedAt: new Date().toISOString()
+    };
+
+    this.contracts.unshift(newContract);
+    this.budgets.unshift(newBudget);
+    this.persistAll();
+
+    this.logAction(
+      'NEW_CONTRACT_CYCLE',
+      `Created cycle #${nextCycleNumber} for ${customer.name} (${customer.code}) with budget ${this.formatCurrency(data.annualBudget)}`
+    );
+
+    this.notify();
+    return { success: true, message: 'ສ້າງຮອບສັນຍາໃໝ່ສຳເລັດແລ້ວ', contract: newContract };
+  }
+
+  // --- Budget Adjustments (Admin Only) ---
+  public updateBudget(
+    budgetId: string,
+    newAmount: number,
+    notes?: string
+  ): { success: boolean; message: string } {
+    if (this.currentUser?.role !== 'ADMIN') {
+      return { success: false, message: 'ສະເພາະ Admin ເທົ່ານັ້ນທີ່ສາມາດປັບແກ້ງົບປະມານໄດ້' };
+    }
+
+    const budget = this.budgets.find((b) => b.id === budgetId);
+    if (!budget) {
+      return { success: false, message: 'ບໍ່ພົບງົບປະມານນີ້' };
+    }
+
+    const oldAmount = budget.annualAmount;
+    budget.annualAmount = Number(newAmount);
+    budget.remainingAmount = budget.annualAmount - budget.totalUsed;
+    budget.utilizationPercentage =
+      budget.annualAmount > 0
+        ? Math.round((budget.totalUsed / budget.annualAmount) * 1000) / 10
+        : 0;
+
+    if (budget.totalUsed > budget.annualAmount) {
+      budget.status = 'EXCEEDED';
+    } else if (budget.utilizationPercentage >= 100) {
+      budget.status = 'CRITICAL_100';
+    } else if (budget.utilizationPercentage >= 80) {
+      budget.status = 'WARNING_80';
+    } else {
+      budget.status = 'NORMAL';
+    }
+
+    budget.updatedAt = new Date().toISOString();
+    this.persistAll();
+
+    this.logAction(
+      'UPDATE_BUDGET',
+      `Adjusted budget for ${budget.customerCode} from ${this.formatCurrency(oldAmount)} to ${this.formatCurrency(newAmount)} (${notes || 'No note'})`
+    );
+
+    this.notify();
+    return { success: true, message: 'ອັບເດດງົບປະມານສຳເລັດແລ້ວ' };
+  }
+
+  // --- Customer CRUD ---
+  public addCustomer(data: {
+    code: string;
+    name: string;
+    team: Team;
+    conditionQty: number;
+    conditionUOM: string;
+    conditionProductDescription: string;
+    commencingOn: string;
+    expiringOn: string;
+    annualBudget: number;
+    phone?: string;
+    address?: string;
+    province?: string;
+  }): { success: boolean; message: string } {
+    // RBAC: Non-admin users can only add customers to their own assigned team
+    if (this.currentUser && this.currentUser.role !== 'ADMIN' && this.currentUser.team !== 'ALL') {
+      if (data.team !== this.currentUser.team) {
+        return { success: false, message: 'ທ່ານສາມາດເພີ່ມລູກຄ້າສະເພາະທີມຂອງທ່ານເທົ່ານັ້ນ' };
+      }
+    }
+
+    if (this.customers.some((c) => c.code.trim().toUpperCase() === data.code.trim().toUpperCase())) {
+      return { success: false, message: 'ລະຫັດລູກຄ້ານີ້ມີຢູ່ໃນລະບົບແລ້ວ (Duplicate Customer Code)' };
+    }
+
+    const customerCode = data.code.trim().toUpperCase();
+    const customer: Customer = {
+      code: customerCode,
+      name: data.name.trim(),
+      team: data.team,
+      mde: `MDE-${data.team}`,
+      phone: data.phone || '',
+      address: data.address || '',
+      province: data.province || '',
+      status: 'ACTIVE',
+      createdAt: new Date().toISOString().slice(0, 10)
+    };
+
+    const condition: CustomerCondition = {
+      id: `CND-${customerCode}`,
+      customerCode,
+      conditionQuantity: Number(data.conditionQty) || 0,
+      conditionUOM: data.conditionUOM || 'Cartons',
+      conditionProductDescription: data.conditionProductDescription || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    const contractId = `CNT-${customerCode}-01`;
+    const budgetId = `BDG-${customerCode}-01`;
+
+    const contract: Contract = {
+      id: contractId,
+      customerCode,
+      customerName: customer.name,
+      team: customer.team,
+      commencingOn: data.commencingOn,
+      expiringOn: data.expiringOn,
+      cycleNumber: 1,
+      status: 'ACTIVE',
+      createdAt: new Date().toISOString()
+    };
+
+    const annualAmount = Number(data.annualBudget) || 0;
+    const budget: Budget = {
+      id: budgetId,
+      contractId,
+      customerCode,
+      team: customer.team,
+      annualAmount,
+      totalUsed: 0,
+      remainingAmount: annualAmount,
+      utilizationPercentage: 0,
+      status: 'NORMAL',
+      updatedAt: new Date().toISOString()
+    };
+
+    this.customers.unshift(customer);
+    this.conditions.unshift(condition);
+    this.contracts.unshift(contract);
+    this.budgets.unshift(budget);
+
+    this.persistAll();
+    this.logAction('ADD_CUSTOMER', `Created new customer ${customer.name} (${customerCode}) in Team ${data.team}`);
+    this.notify();
+    return { success: true, message: 'ເພີ່ມລູກຄ້າໃໝ່ສຳເລັດແລ້ວ' };
+  }
+
+  // --- User Management (Admin only) ---
+  public getUsers(): User[] {
+    return this.users;
+  }
+
+  public addUser(data: {
+    username: string;
+    password?: string;
+    fullName: string;
+    role: 'ADMIN' | 'TEAM_USER';
+    team: Team;
+    email?: string;
+  }): { success: boolean; message: string } {
+    if (this.users.some((u) => u.username.toLowerCase() === data.username.toLowerCase())) {
+      return { success: false, message: 'ຊື່ຜູ້ໃຊ້ນີ້ມີຢູ່ແລ້ວ (Duplicate Username)' };
+    }
+
+    const newUser: User = {
+      id: `USR-${Date.now().toString().slice(-4)}`,
+      username: data.username.trim(),
+      password: data.password?.trim() || `${data.username.trim()}_123`,
+      fullName: data.fullName.trim(),
+      email: data.email || `${data.username}@example.invalid`,
+      role: data.role,
+      team: data.role === 'ADMIN' ? 'ALL' : data.team,
+      isActive: true,
+      createdAt: new Date().toISOString().slice(0, 10)
+    };
+
+    this.users.push(newUser);
+    this.persistUsers();
+    this.logAction('CREATE_USER', `Created user account ${newUser.username} (${newUser.role} - ${newUser.team})`);
+    this.notify();
+    return { success: true, message: 'ສ້າງຜູ້ໃຊ້ງານໃໝ່ສຳເລັດແລ້ວ' };
+  }
+
+  public updateUser(
+    id: string,
+    data: Partial<Pick<User, 'username' | 'password' | 'fullName' | 'role' | 'team' | 'isActive' | 'email'>>
+  ): { success: boolean; message: string } {
+    const user = this.users.find((u) => u.id === id);
+    if (!user) {
+      return { success: false, message: 'User not found' };
+    }
+
+    // Check duplicate username if username is changed
+    if (data.username && data.username.toLowerCase() !== user.username.toLowerCase()) {
+      if (this.users.some((u) => u.id !== id && u.username.toLowerCase() === data.username!.toLowerCase())) {
+        return { success: false, message: 'ຊື່ຜູ້ໃຊ້ນີ້ມີຢູ່ແລ້ວ (Username already taken)' };
+      }
+    }
+
+    Object.assign(user, data);
+    if (user.role === 'ADMIN') {
+      user.team = 'ALL';
+    }
+
+    // If current logged-in user is updated, update session
+    if (this.currentUser && this.currentUser.id === id) {
+      this.currentUser = { ...user };
+      safeSetItem(STORAGE_KEYS.AUTH, JSON.stringify(this.currentUser));
+    }
+
+    this.persistUsers();
+    this.logAction('UPDATE_USER', `Updated user ${user.username} (${user.fullName})`);
+    this.notify();
+    return { success: true, message: 'ອັບເດດຂໍ້ມູນຜູ້ໃຊ້ງານສຳເລັດແລ້ວ' };
+  }
+
+  public resetUserPassword(id: string, newPassword?: string): { success: boolean; message: string; password?: string } {
+    const user = this.users.find((u) => u.id === id);
+    if (!user) {
+      return { success: false, message: 'User not found' };
+    }
+    const defaultPw = newPassword?.trim() || `${user.username}_123`;
+    user.password = defaultPw;
+    this.persistUsers();
+    this.logAction('RESET_PASSWORD', `Reset password for user ${user.username}`);
+    this.notify();
+    return { success: true, message: `ຣີເຊັດລະຫັດຜ່ານສຳເລັດ: ${defaultPw}`, password: defaultPw };
+  }
+
+  public deleteUser(id: string): { success: boolean; message: string } {
+    const user = this.users.find((u) => u.id === id);
+    if (!user) {
+      return { success: false, message: 'User not found' };
+    }
+    if (user.username === 'admin') {
+      return { success: false, message: 'ບໍ່ສາມາດລຶບບັນຊີຫຼັກ Admin ໄດ້' };
+    }
+    this.users = this.users.filter((u) => u.id !== id);
+    this.persistUsers();
+    this.logAction('DELETE_USER', `Deleted user ${user.username}`);
+    this.notify();
+    return { success: true, message: 'ລຶບບັນຊີຜູ້ໃຊ້ງານສຳເລັດແລ້ວ' };
+  }
+
+  private persistUsers() {
+    safeSetItem(STORAGE_KEYS.USERS, JSON.stringify(this.users));
+  }
+
+  // --- Audit Logs ---
+  public getLogs(limit = 100): ActivityLog[] {
+    return this.logs.slice(0, limit);
+  }
+
+  public logAction(action: string, details: string) {
+    const log: ActivityLog = {
+      id: `LOG-${Date.now().toString().slice(-6)}`,
+      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+      user: this.currentUser?.username || 'system',
+      role: this.currentUser?.role || 'ADMIN',
+      team: this.currentUser?.team || 'ALL',
+      action,
+      details
+    };
+    this.logs.unshift(log);
+    if (this.logs.length > 500) {
+      this.logs = this.logs.slice(0, 500);
+    }
+    safeSetItem(STORAGE_KEYS.LOGS, JSON.stringify(this.logs));
+  }
+
+  // --- Dashboard Metrics Aggregator ---
+  public getDashboardMetrics(selectedTeam?: Team | 'ALL'): DashboardMetrics {
+    // If team user, enforce assigned team
+    const effectiveTeam =
+      this.currentUser && this.currentUser.role !== 'ADMIN' && this.currentUser.team !== 'ALL'
+        ? this.currentUser.team
+        : selectedTeam;
+
+    const filteredCustomers =
+      effectiveTeam && effectiveTeam !== 'ALL'
+        ? this.customers.filter((c) => c.team === effectiveTeam)
+        : this.customers;
+
+    const customerCodes = new Set(filteredCustomers.map((c) => c.code));
+
+    const filteredContracts = this.contracts.filter((c) => customerCodes.has(c.customerCode));
+    const activeContracts = filteredContracts.filter((c) => c.status === 'ACTIVE').length;
+    const expiringContracts = filteredContracts.filter((c) => c.status === 'EXPIRING_SOON').length;
+    const expiredContracts = filteredContracts.filter((c) => c.status === 'EXPIRED').length;
+
+    // Budgets for active contracts
+    const contractIds = new Set(filteredContracts.map((c) => c.id));
+    const filteredBudgets = this.budgets.filter((b) => contractIds.has(b.contractId));
+
+    const totalAnnualBudget = filteredBudgets.reduce((acc, b) => acc + (b.annualAmount || 0), 0);
+    const totalBudgetUsed = filteredBudgets.reduce((acc, b) => acc + (b.totalUsed || 0), 0);
+    const totalRemainingBudget = totalAnnualBudget - totalBudgetUsed;
+    const overallUtilizationRate =
+      totalAnnualBudget > 0
+        ? Math.round((totalBudgetUsed / totalAnnualBudget) * 1000) / 10
+        : 0;
+
+    // Per-Team Breakdown
+    const teamBudgets = {} as DashboardMetrics['teamBudgets'];
+    const teams: Team[] = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7'];
+
+    teams.forEach((t) => {
+      const tCusts = this.customers.filter((c) => c.team === t);
+      const tCustCodes = new Set(tCusts.map((c) => c.code));
+      const tBudgets = this.budgets.filter((b) => tCustCodes.has(b.customerCode));
+
+      const annual = tBudgets.reduce((acc, b) => acc + (b.annualAmount || 0), 0);
+      const used = tBudgets.reduce((acc, b) => acc + (b.totalUsed || 0), 0);
+      const rem = annual - used;
+      const util = annual > 0 ? Math.round((used / annual) * 1000) / 10 : 0;
+
+      teamBudgets[t] = {
+        customerCount: tCusts.length,
+        annualBudget: annual,
+        usedBudget: used,
+        remainingBudget: rem,
+        utilization: util
+      };
+    });
+
+    // Category usage for active transactions
+    const filteredTxns = this.transactions.filter(
+      (t) => customerCodes.has(t.customerCode) && t.status === 'ACTIVE'
+    );
+    const categoryUsage: Record<string, number> = {};
+    filteredTxns.forEach((t) => {
+      categoryUsage[t.category] = (categoryUsage[t.category] || 0) + t.amount;
+    });
+
+    // Monthly usage
+    const monthlyMap: Record<string, number> = {
+      'Jan': 0, 'Feb': 0, 'Mar': 0, 'Apr': 0, 'May': 0, 'Jun': 0,
+      'Jul': 0, 'Aug': 0, 'Sep': 0, 'Oct': 0, 'Nov': 0, 'Dec': 0
+    };
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    filteredTxns.forEach((t) => {
+      const d = new Date(t.date);
+      if (!isNaN(d.getTime())) {
+        const m = monthNames[d.getMonth()];
+        monthlyMap[m] = (monthlyMap[m] || 0) + t.amount;
+      }
+    });
+
+    const monthlyUsage = monthNames.map((month) => ({
+      month,
+      amount: monthlyMap[month] || 0
+    }));
+
+    return {
+      totalCustomers: filteredCustomers.length,
+      totalAnnualBudget,
+      totalBudgetUsed,
+      totalRemainingBudget,
+      overallUtilizationRate,
+      activeContracts,
+      expiringContracts,
+      expiredContracts,
+      teamBudgets,
+      categoryUsage,
+      monthlyUsage
+    };
+  }
+
+  // --- CSV Import / Export Handler ---
+  public importCustomersFromCsv(csvText: string): {
+    success: boolean;
+    importedCount: number;
+    errors: string[];
+  } {
+    const lines = csvText.trim().split(/\r?\n/);
+    if (lines.length < 2) {
+      return { success: false, importedCount: 0, errors: ['CSV file is empty or invalid'] };
+    }
+
+    let importedCount = 0;
+    const errors: string[] = [];
+
+    // Columns: MDE, Customer Code, Customer Name, Condition Quantity, Condition UOM, Condition Product Code Description, Commencing On, Expiring On
+    // Skip header line
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+
+      // Split by comma or semicolon, handling quoted strings
+      const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((p) => p.replace(/^"|"$/g, '').trim());
+
+      if (parts.length < 8) {
+        errors.push(`Line ${i + 1}: Insufficient columns (expected 8, got ${parts.length})`);
+        continue;
+      }
+
+      const [
+        mdeRaw,
+        customerCode,
+        customerName,
+        condQtyRaw,
+        condUOM,
+        condProdDesc,
+        commencingOn,
+        expiringOn
+      ] = parts;
+
+      if (!customerCode || !customerName) {
+        errors.push(`Line ${i + 1}: Missing customer code or name`);
+        continue;
+      }
+
+      // Map MDE-B1 -> B1
+      const teamMatch = mdeRaw.match(/B[1-7]/i);
+      const team: Team = teamMatch ? (teamMatch[0].toUpperCase() as Team) : 'B1';
+      const mde = `MDE-${team}`;
+      const conditionQuantity = parseFloat(condQtyRaw) || 0;
+
+      // Check if customer exists
+      let customer = this.getCustomerByCode(customerCode);
+      if (!customer) {
+        customer = {
+          code: customerCode,
+          name: customerName,
+          team,
+          mde,
+          status: 'ACTIVE',
+          createdAt: new Date().toISOString().slice(0, 10)
+        };
+        this.customers.push(customer);
+      } else {
+        // Update customer details preserving history
+        customer.name = customerName;
+        customer.team = team;
+        customer.mde = mde;
+      }
+
+      // Condition
+      let condition = this.getCustomerCondition(customerCode);
+      if (!condition) {
+        condition = {
+          id: `CND-${customerCode}`,
+          customerCode,
+          conditionQuantity,
+          conditionUOM: condUOM || 'Cartons',
+          conditionProductDescription: condProdDesc || '',
+          updatedAt: new Date().toISOString()
+        };
+        this.conditions.push(condition);
+      } else {
+        condition.conditionQuantity = conditionQuantity;
+        condition.conditionUOM = condUOM || condition.conditionUOM;
+        condition.conditionProductDescription = condProdDesc || condition.conditionProductDescription;
+        condition.updatedAt = new Date().toISOString();
+      }
+
+      // Contract
+      let contract = this.getActiveContract(customerCode);
+      if (!contract) {
+        const contractId = `CNT-${customerCode}-01`;
+        const budgetId = `BDG-${customerCode}-01`;
+
+        contract = {
+          id: contractId,
+          customerCode,
+          customerName,
+          team,
+          commencingOn: commencingOn || '2026-01-01',
+          expiringOn: expiringOn || '2026-12-31',
+          cycleNumber: 1,
+          status: 'ACTIVE',
+          createdAt: new Date().toISOString()
+        };
+        this.contracts.push(contract);
+
+        const pricePerCrate = this.settings.pricePerCrate || 240000;
+        const annualBudget = conditionQuantity > 0 ? conditionQuantity * pricePerCrate : 30000000;
+        const budget: Budget = {
+          id: budgetId,
+          contractId,
+          customerCode,
+          team,
+          annualAmount: annualBudget,
+          totalUsed: 0,
+          remainingAmount: annualBudget,
+          utilizationPercentage: 0,
+          status: 'NORMAL',
+          updatedAt: new Date().toISOString()
+        };
+        this.budgets.push(budget);
+      } else {
+        if (commencingOn) contract.commencingOn = commencingOn;
+        if (expiringOn) contract.expiringOn = expiringOn;
+      }
+
+      importedCount++;
+    }
+
+    this.persistAll();
+    this.recalculateContractStatuses();
+    this.logAction('IMPORT_CUSTOMERS', `Imported ${importedCount} customers from CSV file`);
+    this.notify();
+
+    return { success: true, importedCount, errors };
+  }
+
+  // --- Clear All Customers (Clean Slate for fresh Excel import) ---
+  public clearAllCustomers(): { success: boolean; message: string } {
+    if (this.currentUser?.role !== 'ADMIN') {
+      return { success: false, message: 'ສະເພາະ Admin ເທົ່ານັ້ນທີ່ສາມາດລຶບລາຍຊື່ລູກຄ້າທັງໝົດໄດ້' };
+    }
+
+    const previousCount = this.customers.length;
+    this.customers = [];
+    this.conditions = [];
+    this.contracts = [];
+    this.budgets = [];
+    this.transactions = [];
+
+    this.persistAll();
+    this.logAction(
+      'CLEAR_ALL_CUSTOMERS',
+      `Admin cleared all ${previousCount} customer records, contracts, budgets, and transactions.`
+    );
+    this.notify();
+
+    return {
+      success: true,
+      message: `ລຶບລາຍຊື່ລູກຄ້າທັງໝົດ ${previousCount} ລາຍການສຳເລັດແລ້ວ! ພ້ອມສຳລັບການອັບໂຫຼດໄຟລ໌ Excel ໃໝ່.`
+    };
+  }
+
+  // --- Import Customers from Parsed Excel/CSV Rows ---
+  public importCustomersFromRawRows(
+    rows: (string | number)[][],
+    options: {
+      replaceAll?: boolean;
+      defaultAnnualBudget?: number;
+    } = {}
+  ): {
+    success: boolean;
+    importedCount: number;
+    errors: string[];
+  } {
+    if (rows.length < 1) {
+      return { success: false, importedCount: 0, errors: ['ໄຟລ໌ບໍ່ມີຂໍ້ມູນ (No rows found)'] };
+    }
+
+    if (options.replaceAll) {
+      this.customers = [];
+      this.conditions = [];
+      this.contracts = [];
+      this.budgets = [];
+      this.transactions = [];
+    }
+
+    const defaultBudget = options.defaultAnnualBudget || 30000000;
+    const errors: string[] = [];
+    let importedCount = 0;
+
+    // Detect if first row is header
+    let startIndex = 0;
+    const firstRow = rows[0].map((cell) => String(cell || '').toLowerCase().trim());
+    const isHeader =
+      firstRow.some((c) => c.includes('mde') || c.includes('code') || c.includes('name') || c.includes('condition'));
+    if (isHeader) {
+      startIndex = 1;
+    }
+
+    // Helper to format date strings or Excel serial numbers
+    const parseDateValue = (val: string | number | undefined, defaultDate: string): string => {
+      if (!val) return defaultDate;
+      if (typeof val === 'number') {
+        // Excel serial date to JS date
+        const excelEpoch = new Date(1899, 11, 30);
+        const jsDate = new Date(excelEpoch.getTime() + val * 86400000);
+        if (!isNaN(jsDate.getTime())) {
+          return jsDate.toISOString().slice(0, 10);
+        }
+      }
+      const str = String(val).trim();
+      // Try YYYY-MM-DD or DD/MM/YYYY
+      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(str)) {
+        const [d, m, y] = str.split('/');
+        return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+      }
+      const parsed = new Date(str);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.toISOString().slice(0, 10);
+      }
+      return defaultDate;
+    };
+
+    const existingCodes = new Set(this.customers.map((c) => c.code.toUpperCase()));
+
+    for (let i = startIndex; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+
+      const mdeRaw = String(row[0] || '').trim();
+      const customerCode = String(row[1] || '').trim().toUpperCase();
+      const customerName = String(row[2] || '').trim();
+      const condQtyRaw = Number(row[3]) || 0;
+      const condUOM = String(row[4] || 'Cartons').trim();
+      const condProdDesc = String(row[5] || '').trim();
+      const commencingOn = parseDateValue(row[6], '2026-01-01');
+      const expiringOn = parseDateValue(row[7], '2026-12-31');
+
+      if (!customerCode && !customerName) continue;
+      if (!customerCode || !customerName) {
+        errors.push(`ແຖວທີ ${i + 1}: ລະຫັດ ຫຼື ຊື່ລູກຄ້າຫວ່າງເປົ່າ`);
+        continue;
+      }
+
+      // Map MDE-B1 -> B1
+      const teamMatch = mdeRaw.match(/B[1-7]/i);
+      const team: Team = teamMatch ? (teamMatch[0].toUpperCase() as Team) : 'B1';
+      const mde = `MDE-${team}`;
+
+      let customer = this.getCustomerByCode(customerCode);
+      if (!customer) {
+        customer = {
+          code: customerCode,
+          name: customerName,
+          team,
+          mde,
+          status: 'ACTIVE',
+          createdAt: new Date().toISOString().slice(0, 10)
+        };
+        this.customers.push(customer);
+        existingCodes.add(customerCode);
+      } else {
+        customer.name = customerName;
+        customer.team = team;
+        customer.mde = mde;
+      }
+
+      // Condition
+      let condition = this.getCustomerCondition(customerCode);
+      if (!condition) {
+        condition = {
+          id: `CND-${customerCode}`,
+          customerCode,
+          conditionQuantity: condQtyRaw,
+          conditionUOM: condUOM || 'Cartons',
+          conditionProductDescription: condProdDesc || 'Standard Marketing Condition',
+          updatedAt: new Date().toISOString()
+        };
+        this.conditions.push(condition);
+      } else {
+        condition.conditionQuantity = condQtyRaw;
+        condition.conditionUOM = condUOM || condition.conditionUOM;
+        condition.conditionProductDescription = condProdDesc || condition.conditionProductDescription;
+        condition.updatedAt = new Date().toISOString();
+      }
+
+      // Contract
+      let contract = this.getActiveContract(customerCode);
+      if (!contract) {
+        const contractId = `CNT-${customerCode}-01`;
+        const budgetId = `BDG-${customerCode}-01`;
+
+        contract = {
+          id: contractId,
+          customerCode,
+          customerName,
+          team,
+          commencingOn,
+          expiringOn,
+          cycleNumber: 1,
+          status: 'ACTIVE',
+          createdAt: new Date().toISOString()
+        };
+        this.contracts.push(contract);
+
+        const annualAmount = condQtyRaw > 0
+          ? condQtyRaw * (this.settings.pricePerCrate || 240000)
+          : (defaultBudget || 30000000);
+
+        const budget: Budget = {
+          id: budgetId,
+          contractId,
+          customerCode,
+          team,
+          annualAmount: annualAmount,
+          totalUsed: 0,
+          remainingAmount: annualAmount,
+          utilizationPercentage: 0,
+          status: 'NORMAL',
+          updatedAt: new Date().toISOString()
+        };
+        this.budgets.push(budget);
+      } else {
+        contract.commencingOn = commencingOn;
+        contract.expiringOn = expiringOn;
+      }
+
+      importedCount++;
+    }
+
+    this.persistAll();
+    this.recalculateContractStatuses();
+    this.logAction(
+      'IMPORT_EXCEL_CUSTOMERS',
+      `Imported ${importedCount} customers from Excel file (${options.replaceAll ? 'Replaced database' : 'Appended'})`
+    );
+    this.notify();
+
+    return {
+      success: true,
+      importedCount,
+      errors
+    };
+  }
+}
+
+export const storage = new StorageService();
+

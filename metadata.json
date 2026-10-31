@@ -1,0 +1,7 @@
+{
+  "name": "MKT Budget Management",
+  "description": "MKT Customer Budget Management Web App (ລະບົບຄຸ້ມຄອງງົບປະມານລູກຄ້າ) with Contract-based Cycles for Teams B1-B7",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

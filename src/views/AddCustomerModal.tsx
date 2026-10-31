@@ -1,0 +1,309 @@
+import React, { useState } from 'react';
+import {
+  X,
+  UserPlus,
+  Building2,
+  Package,
+  Calendar,
+  Wallet
+} from 'lucide-react';
+import { storage } from '../services/storage';
+import { translations, Language } from '../locales/translations';
+import { Team, TEAMS } from '../types';
+
+interface AddCustomerModalProps {
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
+  onClose,
+  onSuccess
+}) => {
+  const currentUser = storage.getCurrentUser();
+  const settings = storage.getSettings();
+  const lang: Language = settings.language;
+  const t = translations[lang];
+
+  const isAdmin = currentUser?.role === 'ADMIN';
+  const userTeam: Team = currentUser?.team && currentUser.team !== 'ALL' ? (currentUser.team as Team) : 'B1';
+  const [team, setTeam] = useState<Team>(userTeam);
+  const [code, setCode] = useState(`CUST-${userTeam}-${Date.now().toString().slice(-4)}`);
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [province, setProvince] = useState('ນະຄອນຫຼວງວຽງຈັນ (Vientiane Capital)');
+  const [address, setAddress] = useState('');
+
+  const pricePerCrate = settings.pricePerCrate || 240000;
+
+  // Condition fields
+  const [conditionQty, setConditionQty] = useState<number>(125);
+  const [conditionUOM, setConditionUOM] = useState('Cartons');
+  const [conditionProductDescription, setConditionProductDescription] = useState('Beerlao Lager Can 330ml x 24');
+
+  // Contract & Budget
+  const [commencingOn, setCommencingOn] = useState('2026-01-01');
+  const [expiringOn, setExpiringOn] = useState('2026-12-31');
+  const [annualBudget, setAnnualBudget] = useState<number>(125 * pricePerCrate);
+
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const handleTeamChange = (newTeam: Team) => {
+    setTeam(newTeam);
+    setCode(`CUST-${newTeam}-${Date.now().toString().slice(-4)}`);
+  };
+
+  const handleQtyChange = (qty: number) => {
+    setConditionQty(qty);
+    setAnnualBudget(qty * pricePerCrate);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+
+    const res = storage.addCustomer({
+      code,
+      name,
+      team,
+      conditionQty,
+      conditionUOM,
+      conditionProductDescription,
+      commencingOn,
+      expiringOn,
+      annualBudget,
+      phone,
+      address,
+      province
+    });
+
+    if (res.success) {
+      onSuccess();
+    } else {
+      setErrorMessage(res.message);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
+      <div className="w-full max-w-2xl rounded-3xl bg-white shadow-2xl border border-slate-100 overflow-hidden my-8 animate-in fade-in zoom-in-95">
+        
+        {/* Header */}
+        <div className="bg-slate-900 p-5 text-white flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center">
+              <UserPlus className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-white">
+                {lang === 'lo' ? 'ເພີ່ມຮ້ານໃໝ່ (Add Store / Customer)' : t.addNewCustomer}
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                {lang === 'lo' ? 'ເພີ່ມຂໍ້ມູນຮ້ານໃໝ່ພ້ອມເງື່ອນໄຂສິນຄ້າ ແລະ ຮອບສັນຍາ' : 'Register New Customer Account & Contract Conditions'}
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+          
+          {errorMessage && (
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs">
+              {errorMessage}
+            </div>
+          )}
+
+          {/* Basic Info */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {t.team} <span className="text-rose-500">*</span>
+              </label>
+              {isAdmin ? (
+                <select
+                  required
+                  value={team}
+                  onChange={(e) => handleTeamChange(e.target.value as Team)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {TEAMS.map((tm) => (
+                    <option key={tm} value={tm}>
+                      Team {tm} (MDE-{tm})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="w-full p-2.5 bg-blue-50/70 border border-blue-200 rounded-xl text-xs font-bold text-blue-900 flex items-center justify-between">
+                  <span>Team {team} (MDE-{team})</span>
+                  <span className="text-[10px] bg-blue-200/60 text-blue-800 px-2 py-0.5 rounded-md">
+                    {lang === 'lo' ? 'ທີມຂອງທ່ານ' : 'Your Team'}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {t.customerCode} <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {lang === 'lo' ? 'ເບີໂທລະສັບ' : 'Phone'}
+              </label>
+              <input
+                type="text"
+                placeholder="+856 20 ..."
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              {t.customerName} <span className="text-rose-500">*</span>
+            </label>
+            <input
+              type="text"
+              required
+              placeholder={lang === 'lo' ? 'ເຊັ່ນ: ຮ້ານອາຫານ ດາວເຮືອງ ສາຂາ 1' : 'Customer / Store name'}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Condition Info */}
+          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+              <Package className="w-4 h-4 text-emerald-600" />
+              <span>{lang === 'lo' ? 'ເງື່ອນໄຂສັນຍາ (Contract Conditions)' : 'Contract Conditions'}</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  {t.conditionProduct} <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={conditionProductDescription}
+                  onChange={(e) => setConditionProductDescription(e.target.value)}
+                  className="w-full p-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  {t.conditionQty} & {t.conditionUOM}
+                </label>
+                <div className="flex gap-1.5">
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    value={conditionQty}
+                    onChange={(e) => handleQtyChange(Number(e.target.value))}
+                    className="w-2/3 p-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+                  />
+                  <input
+                    type="text"
+                    required
+                    value={conditionUOM}
+                    onChange={(e) => setConditionUOM(e.target.value)}
+                    className="w-1/3 p-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Contract Dates & Initial Budget */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {t.commencingOn} <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                required
+                value={commencingOn}
+                onChange={(e) => setCommencingOn(e.target.value)}
+                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {t.expiringOn} <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                required
+                value={expiringOn}
+                onChange={(e) => setExpiringOn(e.target.value)}
+                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                {t.annualBudget} ({settings.currencySymbol}) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="number"
+                required
+                min="0"
+                step="any"
+                value={annualBudget}
+                onChange={(e) => setAnnualBudget(Number(e.target.value))}
+                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
+              />
+              <span className="text-[10px] text-emerald-700 font-mono mt-1 block">
+                {conditionQty} {conditionUOM || 'ລັງ'} × {storage.formatCurrency(pricePerCrate)} = {storage.formatCurrency(annualBudget)}
+              </span>
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+            >
+              {t.cancel}
+            </button>
+            <button
+              type="submit"
+              className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-md shadow-blue-600/30 transition cursor-pointer active:scale-95"
+            >
+              {lang === 'lo' ? 'ບັນທຶກລູກຄ້າໃໝ່' : 'Register Customer'}
+            </button>
+          </div>
+
+        </form>
+
+      </div>
+    </div>
+  );
+};
