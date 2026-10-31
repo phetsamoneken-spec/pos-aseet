@@ -90,33 +90,12 @@ class StorageService {
         this.settings = { ...INITIAL_SETTINGS, ...JSON.parse(storedSettings) };
       }
 
-      const storedUsers = safeGetItem(STORAGE_KEYS.USERS);
-      if (storedUsers) {
-        this.users = JSON.parse(storedUsers);
-        // Ensure all users have passwords populated
-        let updated = false;
-        this.users.forEach((u) => {
-          if (!u.password) {
-            u.password = u.username === 'admin' ? 'CHANGE_ME_ADMIN_PASSWORD' : `${u.username}_123`;
-            updated = true;
-          }
-        });
-        if (updated) {
-          safeSetItem(STORAGE_KEYS.USERS, JSON.stringify(this.users));
-        }
-      } else {
-        this.users = [...INITIAL_USERS];
-        safeSetItem(STORAGE_KEYS.USERS, JSON.stringify(this.users));
-      }
-
-      const storedAuth = safeGetItem(STORAGE_KEYS.AUTH);
-      if (storedAuth) {
-        this.currentUser = JSON.parse(storedAuth);
-      } else {
-        // Default login as Admin for instant accessibility
-        this.currentUser = this.users[0];
-        safeSetItem(STORAGE_KEYS.AUTH, JSON.stringify(this.currentUser));
-      }
+      // Legacy browser users are untrusted and must never grant application access.
+      // User records now belong to the private authentication service.
+      this.users = [];
+      this.currentUser = null;
+      safeRemoveItem(STORAGE_KEYS.AUTH);
+      safeRemoveItem(STORAGE_KEYS.USERS);
 
       const storedCustomers = safeGetItem(STORAGE_KEYS.CUSTOMERS);
       if (storedCustomers) {
@@ -242,44 +221,18 @@ class StorageService {
     return this.currentUser;
   }
 
-  public setCurrentUser(user: User | null) {
-    this.currentUser = user;
-    if (user) {
-      safeSetItem(STORAGE_KEYS.AUTH, JSON.stringify(user));
-      this.logAction('USER_LOGIN', `User ${user.username} logged in (${user.role} - ${user.team})`);
-    } else {
-      safeRemoveItem(STORAGE_KEYS.AUTH);
-    }
+  public setCurrentUser(_user: User | null) {
+    // Legacy local login intentionally disabled.
+    this.currentUser = null;
+    safeRemoveItem(STORAGE_KEYS.AUTH);
     this.notify();
   }
 
-  public login(username: string, password?: string): { success: boolean; message?: string } {
-    const user = this.users.find(
-      (u) => u.username.toLowerCase() === username.trim().toLowerCase()
-    );
-    if (!user) {
-      return { success: false, message: 'ບໍ່ພົບຊື່ຜູ້ໃຊ້ນີ້ໃນລະບົບ (Username not found)' };
-    }
-    if (!user.isActive) {
-      return { success: false, message: 'ບັນຊີນີ້ຖືກປິດການໃຊ້ງານແລ້ວ (Account is disabled)' };
-    }
-
-    // Password verification
-    if (password && user.password && password.trim() !== user.password) {
-      return { success: false, message: 'ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ (Incorrect password)' };
-    }
-
-    // Update last login
-    user.lastLogin = new Date().toISOString().replace('T', ' ').slice(0, 16);
-    this.setCurrentUser(user);
-    this.persistUsers();
-    return { success: true };
+  public login(_username: string, _password?: string): { success: boolean; message?: string } {
+    return { success: false, message: 'Legacy local login is disabled. Use the private authentication API.' };
   }
 
   public logout() {
-    if (this.currentUser) {
-      this.logAction('USER_LOGOUT', `User ${this.currentUser.username} logged out`);
-    }
     this.setCurrentUser(null);
   }
 
