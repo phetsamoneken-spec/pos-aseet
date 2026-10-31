@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, User, ArrowRight, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { storage } from '../services/storage';
+import { authClient } from '../services/authClient';
 import { translations, Language } from '../locales/translations';
 
 export const LoginView: React.FC = () => {
@@ -8,17 +9,26 @@ export const LoginView: React.FC = () => {
   const lang: Language = settings.language;
   const t = translations[lang];
 
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('CHANGE_ME_ADMIN_PASSWORD');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setPending(true);
     setError(null);
-    const res = storage.login(username, password);
-    if (!res.success) {
-      setError(res.message || 'Login failed');
+    try {
+      await authClient.login(username, password);
+      // Do not unlock the old localStorage-backed budget UI.
+      // Server-backed budget endpoints must be completed first.
+      setError('Login verified. Budget workspace is locked until server-side data authorization is complete.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+    } finally {
+      setPassword('');
+      setPending(false);
     }
   };
 
@@ -111,16 +121,17 @@ export const LoginView: React.FC = () => {
 
             <button
               type="submit"
+              disabled={pending}
               className="mt-2 w-full flex items-center justify-center gap-2 py-3 px-4 border border-transparent rounded-xl shadow-lg text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition cursor-pointer active:scale-[0.98]"
             >
-              <span>{t.login}</span>
+              <span>{pending ? "Signing in..." : t.login}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
         </div>
 
         <div className="mt-6 text-center text-xs text-slate-500">
-          Google Spreadsheet ID: <code className="text-slate-400 font-mono">YOUR_SPREADSHEET_ID</code>
+          Private authentication · Budget workspace locked pending secure API migration
         </div>
       </div>
     </div>
