@@ -46,3 +46,46 @@ jobs:
         uses: actions/deploy-pages@v4
         with:
           artifact_name: github-pages-${{ github.run_attempt }}
+      - name: Verify the published HTML and compiled assets
+        env:
+          SITE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, readdir } from 'node:fs/promises';
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          const base = process.env.SITE_URL;
+          assert.ok(base && base.startsWith('https://'));
+          const expectedHtml = await readFile('dist/index.html', 'utf8');
+          assert.ok(!expectedHtml.includes('/src/main.tsx'));
+          const assets = (await readdir('dist/assets')).filter(name => /\.(js|css)$/.test(name));
+          assert.ok(assets.length > 0);
+          let lastError;
+          for (let attempt = 0; attempt < 12; attempt++) {
+            try {
+              const url = new URL(base);
+              url.searchParams.set('verify', process.env.GITHUB_SHA + '-' + attempt);
+              const page = await fetch(url, { cache: 'no-store' });
+              assert.equal(page.status, 200);
+              assert.equal(await page.text(), expectedHtml, 'Live HTML is not the current build yet');
+              for (const name of assets) {
+                const assetUrl = new URL('assets/' + name, base);
+                assetUrl.searchParams.set('verify', process.env.GITHUB_SHA);
+                const response = await fetch(assetUrl, { cache: 'no-store' });
+                assert.equal(response.status, 200, name);
+                assert.match(response.headers.get('content-type') || '', name.endsWith('.css') ? /text\/css/i : /javascript/i);
+                const live = Buffer.from(await response.arrayBuffer());
+                const expected = await readFile('dist/assets/' + name);
+                const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+                assert.equal(hash(live), hash(expected), 'Live asset differs: ' + name);
+              }
+              console.log('Verified live index.html and ' + assets.length + ' JavaScript/CSS files against this exact build: ' + base);
+              process.exit(0);
+            } catch (error) {
+              lastError = error;
+              console.log('Waiting for the published build, attempt ' + (attempt + 1) + ': ' + error.message);
+              await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+          }
+          throw lastError;
+          NODE
