@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const source = fs.readFileSync('gas/Code.gs', 'utf8');
-function backend() {
+function backend(options = {}) {
   let held = false;
   const sheets = new Map();
   const failWrites = new Set();
@@ -31,9 +31,10 @@ function backend() {
     appendRow(row) { this.rows.push([...row]); }
     setFrozenRows() {}
   }
-  const ss = { getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
+  const ss = { getId: () => 'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
   const context = vm.createContext({
-    SpreadsheetApp: { openById: () => ss, flush() {} },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: () => options.property === undefined ? ss.getId() : options.property }) },
+    SpreadsheetApp: { openById: id => { assert.equal(id, ss.getId()); return ss; }, getActiveSpreadsheet: () => options.bound ? ss : null, flush() {} },
     LockService: { getScriptLock: () => ({ waitLock() { held = true; }, hasLock: () => held, releaseLock() { assert.ok(held); held = false; } }) },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: s => ({ setMimeType: () => JSON.parse(s) }) },
     Logger: { log() {} }
@@ -102,4 +103,20 @@ test('partial write failure is not reported as success; retry inserts no duplica
 test('malformed requests return failure and release their lock', () => {
   const b = backend(); assert.equal(b.context.doPost({ postData: { contents: '{bad' } }).success, false);
   assert.equal(b.post(payload()).success, true);
+});
+test('script property resolves the real Sheet ID and ping reports it', () => {
+ const b = backend(); assert.equal(b.context.getSpreadsheet().getId(), 'TEST_SHEET_ID_0123456789');
+ assert.equal(b.context.doGet({ parameter: { action: 'ping' } }).spreadsheetId, 'TEST_SHEET_ID_0123456789');
+ assert.equal(b.post({ ...payload(), spreadsheetId: 'TEST_SHEET_ID_0123456789' }).success, true);
+});
+test('bound Sheet fallback works; missing config gives setup instructions instead of opening placeholder', () => {
+ const bound = backend({ property: 'YOUR_SPREADSHEET_ID', bound: true });
+ assert.equal(bound.context.getSpreadsheet().getId(), 'TEST_SHEET_ID_0123456789');
+ const unbound = backend({ property: 'YOUR_SPREADSHEET_ID' });
+ assert.throws(() => unbound.context.initializeDatabase(), /Script Properties/);
+ assert.equal(unbound.context.doGet({ parameter: { action: 'ping' } }).success, false);
+});
+test('full Sheet URL in Script Properties extracts the ID; invalid config is rejected', () => {
+ assert.equal(backend({ property: 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID_0123456789/edit' }).context.getSpreadsheet().getId(), 'TEST_SHEET_ID_0123456789');
+ assert.throws(() => backend({ property: 'bad' }).context.getSpreadsheet(), /Invalid SPREADSHEET_ID/);
 });

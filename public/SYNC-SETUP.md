@@ -2,7 +2,7 @@
 
 1. ເປີດ Spreadsheet ຂອງທ່ານ: https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID/edit
 2. Extensions → Apps Script. ສຳຮອງ script ເກົ່າກ່ອນ. ໃຊ້ Code.gs ໄຟລ໌ລວມນີ້ເທົ່ານັ້ນ; ຢ່າວາງ DatabaseSetup.gs ຫຼື CustomerImport.gs ຊ້ຳ ເພາະຟັງຊັນລວມໄວ້ແລ້ວ.
-3. ກວດ SPREADSHEET_ID. Run initializeDatabase() ແລະອະນຸຍາດ Google ເມື່ອຖືກຮ້ອງຂໍ. ຟັງຊັນເດີມຈະສ້າງ 10 tabs ທີ່ຂາດ ແລະໃສ່ categories/users ເລີ່ມຕົ້ນໃນ tabs ທີ່ຫວ່າງ; ບໍ່ລຶບຂໍ້ມູນເກົ່າ.
+3. ເປີດ Apps Script → Project Settings (ຮູບເຟືອງ) → Script Properties → Add script property. ຊື່: SPREADSHEET_ID; ຄ່າ: ID ຈິງລະຫວ່າງ /d/ ແລະ /edit ໃນ URL ຂອງ Sheet. ກົດ Save script properties. ຢ່າໃສ່ YOUR_SPREADSHEET_ID. Run initializeDatabase() ແລະອະນຸຍາດ Google ເມື່ອຖືກຮ້ອງຂໍ. ຟັງຊັນເດີມຈະສ້າງ 10 tabs ທີ່ຂາດ ແລະໃສ່ categories/users ເລີ່ມຕົ້ນໃນ tabs ທີ່ຫວ່າງ; ບໍ່ລຶບຂໍ້ມູນເກົ່າ.
 4. Deploy → New deployment → Web app. Execute as: Me. Who has access: Anyone (ຖ້າອົງກອນອະນຸຍາດ). Copy URL ທີ່ລົງທ້າຍ /exec. ຖ້າໃຊ້ deployment ເກົ່າ: Manage deployments → Edit → New version → Deploy.
 5. ເຂົ້າແອັບດ້ວຍ Admin → Settings → ວາງ Web App URL → Test → Save → Sync ໄປ Google Sheets.
 6. ເມື່ອສຳເລັດຈະສະແດງຈຳນວນ records ທີ່ຂຽນ. ກວດ tabs CUSTOMERS, CUSTOMER_CONDITIONS, CONTRACTS, BUDGETS, BUDGET_TRANSACTIONS, ACTIVITY_LOG ແລະ SETTINGS ໃນ Sheet. ລອງ Sync ຊ້ຳ: ID ເກົ່າຄວນອັບເດດ ບໍ່ເພີ່ມແຖວຊ້ຳ.

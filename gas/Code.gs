@@ -7,7 +7,9 @@
  * Teams Supported: B1, B2, B3, B4, B5, B6, B7
  */
 
-const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID";
+// Recommended: set SPREADSHEET_ID in Project Settings > Script Properties.
+// This optional fallback may be set privately in Apps Script, never in public Git.
+const SPREADSHEET_ID = "";
 
 // Install this Code.gs ONLY. It includes initializeDatabase() and importExistingCustomerData().
 // Sync is an app -> Sheet upsert, not a two-way merge. Missing records are never deleted.
@@ -77,14 +79,15 @@ function planSyncTable_(ss, table, records) {
 
 function handleBulkSync(p) {
   if (!p || typeof p !== 'object') throw new Error('Missing sync payload');
-  if (p.spreadsheetId && p.spreadsheetId !== SPREADSHEET_ID) throw new Error('Spreadsheet ID does not match Code.gs');
   const ss = getSpreadsheet();
+  const spreadsheetId = ss.getId();
+  if (p.spreadsheetId && p.spreadsheetId !== 'YOUR_SPREADSHEET_ID' && p.spreadsheetId !== spreadsheetId) throw new Error('Spreadsheet ID does not match the configured backend. Click Test in Settings to load its ID.');
   const data = Object.assign({}, p);
   if (p.settings !== undefined) {
     if (!p.settings || typeof p.settings !== 'object' || Array.isArray(p.settings)) throw new Error('settings must be an object');
     const allowed = ['spreadsheetId','appsScriptUrl','currencyCode','currencySymbol','currencyPosition','pricePerCrate','contractAlertDays','warningThresholdPercent','syncMode','language'];
     data.settingsRows = allowed.filter(function(key) { return Object.prototype.hasOwnProperty.call(p.settings, key); }).map(function(key) {
-      return { key: key, value: p.settings[key], description: 'Synced from MKT app', updatedAt: new Date().toISOString() };
+      return { key: key, value: key === 'spreadsheetId' ? spreadsheetId : p.settings[key], description: 'Synced from MKT app', updatedAt: new Date().toISOString() };
     });
   }
   // Validate every table before writing any business data.
@@ -108,11 +111,20 @@ function handleBulkSync(p) {
     return { success: false, error: String(error), message: 'Sync incomplete. Some writes may have completed; retry is safe by ID.', appliedSheets: appliedSheets, counts: counts };
   }
   const total = plans.reduce(function(sum, plan) { return sum + plan.received; }, 0);
-  return { success: true, syncVersion: 2, message: 'Saved ' + total + ' records across ' + plans.length + ' sheets (upsert by ID).', counts: counts, spreadsheetId: SPREADSHEET_ID, syncedAt: new Date().toISOString() };
+  return { success: true, syncVersion: 2, message: 'Saved ' + total + ' records across ' + plans.length + ' sheets (upsert by ID).', counts: counts, spreadsheetId: spreadsheetId, syncedAt: new Date().toISOString() };
 }
 
 function getSpreadsheet() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID);
+  const configured = String(PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID') || SPREADSHEET_ID).trim();
+  if (configured && configured !== 'YOUR_SPREADSHEET_ID') {
+    const urlMatch = configured.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
+    const id = urlMatch ? urlMatch[1] : configured;
+    if (!/^[A-Za-z0-9_-]{20,}$/.test(id)) throw new Error('Invalid SPREADSHEET_ID in Script Properties. Use the ID between /d/ and /edit in the Sheet URL.');
+    return SpreadsheetApp.openById(id);
+  }
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active) return active;
+  throw new Error('Set SPREADSHEET_ID in Apps Script > Project Settings > Script Properties, then run initializeDatabase() and deploy a new Web App version.');
 }
 
 /**
@@ -127,7 +139,7 @@ function doGet(e) {
         success: true,
         message: "MKT Customer Budget Management Web App Backend Active",
         timestamp: new Date().toISOString(),
-        spreadsheetId: SPREADSHEET_ID
+        spreadsheetId: getSpreadsheet().getId()
       });
     }
 
@@ -390,8 +402,7 @@ function jsonResponse(data) {
  */
 
 function initializeDatabase() {
-  const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID";
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = getSpreadsheet();
 
   const schema = {
     "CUSTOMERS": [
@@ -496,8 +507,7 @@ function initializeDatabase() {
  */
 
 function importExistingCustomerData() {
-  const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID";
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = getSpreadsheet();
 
   // Source sheet containing raw customer columns
   const sourceSheet = ss.getSheetByName("Sheet1") || ss.getSheetByName("RawCustomers") || ss.getSheets()[0];

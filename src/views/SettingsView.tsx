@@ -103,6 +103,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs }) => 
     const res = await GasService.testConnection(formData.appsScriptUrl);
     setTestingGas(false);
     setGasTestResult(res);
+    if (res.success && res.details && typeof res.details === 'object') {
+      const id = (res.details as { spreadsheetId?: unknown }).spreadsheetId;
+      if (typeof id === 'string' && /^[A-Za-z0-9_-]{20,}$/.test(id) && id !== 'YOUR_SPREADSHEET_ID') {
+        setFormData(previous => previous.appsScriptUrl === formData.appsScriptUrl ? { ...previous, spreadsheetId: id } : previous);
+      }
+    }
   };
 
   const handleSyncToSheets = async () => {
@@ -362,8 +368,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs }) => 
             <div className="flex items-center gap-2">
               <input
                 type="text"
-                readOnly
+                disabled={!isAdmin}
                 value={formData.spreadsheetId}
+                onChange={e => setFormData({ ...formData, spreadsheetId: e.target.value.trim() })}
+                placeholder="Spreadsheet ID (or click Test to read it from the backend)"
                 className="w-full p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono font-semibold text-slate-800"
               />
               <a
