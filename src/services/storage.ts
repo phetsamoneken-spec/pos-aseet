@@ -102,7 +102,26 @@ class StorageService {
     try{window.localStorage.setItem(key,text);if(window.localStorage.getItem(key)!==text)throw Error('Storage unavailable');}catch{throw Error('Browser storage is full or unavailable. Download a backup before publishing.');}
     safeSetItem(key,text);this.sheetPublishCache={key,text,value};this.sheetPublishMessage='';this.notify();return value;
   }
-  public completeSheetPublish(endpoint:string,id:string){if(this.getPendingSheetPublish(endpoint)?.id===id){safeRemoveItem(this.sheetPublishKey(endpoint));this.sheetPublishMessage='';this.notify();}}
+  public completeSheetPublish(endpoint:string,id:string){
+    const pending=this.getPendingSheetPublish(endpoint);if(pending?.id!==id)return;
+    for(const oldEndpoint of pending.previousEndpoints||[]){const previous=this.getPendingSheetPublish(oldEndpoint);if(previous?.id===id)safeRemoveItem(this.sheetPublishKey(oldEndpoint));}
+    safeRemoveItem(this.sheetPublishKey(endpoint));this.sheetPublishMessage='';this.notify();
+  }
+  private migratePendingSheetPublish(confirmedSheetId:string,migratedFrom=''):boolean {
+    if(!this.canManageSettings()||!confirmedSheetId||this.getPendingSheetPublish())return false;
+    const endpoint=this.settings.appsScriptUrl;
+    for(const oldEndpoint of RETIRED_BACKENDS){
+      const pending=this.getPendingSheetPublish(oldEndpoint);if(!pending)continue;
+      const source=String(pending.payload.spreadsheetId||'');
+      if(!source||source==='YOUR_SPREADSHEET_ID'||source!==confirmedSheetId&&source!==migratedFrom)continue;
+      const value={...pending,endpoint,previousEndpoints:[...new Set([...(pending.previousEndpoints||[]),oldEndpoint])],payload:{...pending.payload,spreadsheetId:confirmedSheetId}};
+      const key=this.sheetPublishKey(endpoint),text=encodeSheetPublication(value);
+      try{window.localStorage.setItem(key,text);if(window.localStorage.getItem(key)!==text)return false;}catch{return false;}
+      safeSetItem(key,text);this.sheetPublishCache={key,text,value};this.settings.spreadsheetId=confirmedSheetId;safeSetItem(STORAGE_KEYS.SETTINGS,JSON.stringify(this.settings));
+      this.sheetPublishMessage='ຍ້າຍລາຍການລໍສົ່ງມາລິ້ງໃໝ່ແລ້ວ. ກົດລອງສົ່ງໄປ Sheet ອີກຄັ້ງ.';return true;
+    }
+    return false;
+  }
   public setSheetPublishMessage(message:string){this.sheetPublishMessage=message;this.notify();}
   public getSheetPublishState(){return {pending:this.getPendingSheetPublish(),saving:this.bulkPublishing,message:this.sheetPublishMessage};}
   public discardPendingSheetPublish(){
@@ -137,6 +156,7 @@ class StorageService {
         const scope=user.role==='ADMIN'?'ALL':user.team;if(result.scope!==scope)throw Error('Invalid backup scope');
         const data=validateBusinessSnapshot(result.snapshot,scope);
         if(before!==businessFingerprint(this.businessSnapshot()))throw Error('Local data changed during backup. Retry to capture the latest edits.');
+        if(user.role==='ADMIN'&&typeof result.businessRevision==='string'&&this.migratePendingSheetPublish(result.spreadsheetId||'',result.migratedFromSpreadsheetId||'')){this.sheetDataState={status:'local',message:this.sheetPublishMessage};this.notify();return {success:false,message:this.sheetPublishMessage};}
         this.rememberDeletionSupport(result,endpoint,actor.id,token);
         this.applySharedResponse(result,actor);this.settings={...this.settings,...sharedSettings(result.settings)};safeRemoveItem('mkt_shared_settings_pending_v1');
         if(result.spreadsheetId)this.settings.spreadsheetId=result.spreadsheetId;
@@ -353,6 +373,7 @@ class StorageService {
       if(result.scope!==scope)throw Error('Unexpected Sheet data scope');
       const data=validateBusinessSnapshot(result.snapshot,scope);
       if(before!==businessFingerprint(this.businessSnapshot()))return publish('local','ມີການແກ້ຂໍ້ມູນຂະນະກຳລັງໂຫຼດ. ແອັບເກັບການແກ້ໄຂໄວ້; ກະລຸນາ Sync ຫຼືສຳຮອງກ່ອນ.');
+      if(typeof result.businessRevision==='string'&&this.migratePendingSheetPublish(result.spreadsheetId||'',result.migratedFromSpreadsheetId||''))return publish('local',this.sheetPublishMessage);
       this.customers=data.customers;this.conditions=data.conditions;this.contracts=data.contracts;this.budgets=data.budgets;this.transactions=data.transactions;
       this.rememberDeletionSupport(result,endpoint,actor.id,token);
       const previousSheetId=this.settings.spreadsheetId;

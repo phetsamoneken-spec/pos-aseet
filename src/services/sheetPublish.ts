@@ -8,6 +8,7 @@ export interface PendingSheetPublish extends SheetPublishSource {
   id: string;
   actorId: string;
   endpoint: string;
+  previousEndpoints?: string[];
   createdAt: string;
   payload: Record<string, unknown>;
 }

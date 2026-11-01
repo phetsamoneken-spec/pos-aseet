@@ -32,3 +32,23 @@ server.context.setDatabaseSetting_(server.ss,'migrationSourceId','OLD_SOURCE_SHE
 values.set(oldKey,JSON.stringify({...pending,spreadsheetId:'OLD_SOURCE_SHEET_0123456789'}));
 assert.equal((await storage.loadBusinessFromSheets()).success,true);assert.equal(values.get(oldKey),undefined);assert.equal(storage.getPendingBusinessWrite(),null);assert.equal(mutations,3,'an authenticated owner-declared database cutover preserves the existing operation receipt');
 console.log('PASS: new deployment login/default, same-Sheet/account outbox migration, retained receipt on failure, unchanged operation ID, no duplicate writes and no cross-Sheet/account redirection.');
+
+// The previous deployment may also hold a failed Excel publication. Adopt it
+// only after an authenticated same-database read; never publish it implicitly.
+assert.equal((await storage.loadBusinessFromSheets()).success,true);
+const header=['MDE','Customer Code','Customer Name','Condition Quantity','Condition UOM','Product','Commencing On','Expiring On'];
+assert.equal(storage.importCustomersFromRawRows([header,['MDE-B1','PENDING-EXCEL','Pending Excel store',2,'CAS','Product','2026-01-01','2028-12-31']],{replaceAll:false}).success,true);
+const excelPayload=storage.getGoogleSheetsSnapshot(),excel=storage.savePendingSheetPublish(oldEndpoint,excelPayload,{fileName:'pending-master.xlsx',importedCount:1});
+assert.equal(storage.getPendingSheetPublish(),null);
+assert.equal((await storage.loadBusinessFromSheets()).success,false,'Sheet replacement pauses when a verified pending upload is found');
+const moved=storage.getPendingSheetPublish()!;assert.equal(moved.id,excel.id);assert.equal(moved.endpoint,endpoint);assert.deepEqual(moved.payload,excelPayload);assert.ok(moved.previousEndpoints?.includes(oldEndpoint));
+assert.ok(storage.getCustomerByCode('PENDING-EXCEL'),'adopting the receipt cannot replace the original uploaded draft with older Sheet data');assert.ok(storage.getPendingSheetPublish(oldEndpoint),'original receipt stays until acknowledgement');
+assert.ok(!server.sheets.get('CUSTOMERS').rows.some((row:unknown[])=>row[0]==='PENDING-EXCEL'),'migration never publishes a full snapshot automatically');
+const {GasService}=await import('../src/services/gasService');assert.equal((await GasService.syncAllToGoogleSheets()).success,true);assert.equal(storage.getPendingSheetPublish(),null);assert.equal(storage.getPendingSheetPublish(oldEndpoint),null);assert.ok(server.sheets.get('CUSTOMERS').rows.some((row:unknown[])=>row[0]==='PENDING-EXCEL'));
+assert.equal((await storage.loadBusinessFromSheets()).success,true);
+const unrelated=storage.savePendingSheetPublish(oldEndpoint,{...storage.getGoogleSheetsSnapshot(),spreadsheetId:'OTHER_DATABASE_0123456789'});
+assert.equal((await storage.loadBusinessFromSheets()).success,true);assert.equal(storage.getPendingSheetPublish(),null);assert.equal(storage.getPendingSheetPublish(oldEndpoint)!.id,unrelated.id,'unrelated-database receipts are never redirected');
+const routed=storage.savePendingSheetPublish(oldEndpoint,{...storage.getGoogleSheetsSnapshot(),spreadsheetId:'OLD_SOURCE_SHEET_0123456789'});
+assert.equal((await storage.loadBusinessFromSheets()).success,false);assert.equal(storage.getPendingSheetPublish()!.id,routed.id);assert.equal(storage.getPendingSheetPublish()!.payload.spreadsheetId,sheetId,'an authenticated owner-declared cutover may adopt the old Sheet receipt');
+assert.equal((await GasService.syncAllToGoogleSheets()).success,true);assert.equal(storage.getPendingSheetPublish(oldEndpoint),null);
+console.log('PASS: pending Excel deployment migration retains payload/revision/draft until explicit acknowledgement, rejects unrelated Sheets and supports the owner-declared database cutover.');
