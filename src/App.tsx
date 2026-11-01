@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ThemeSwitcher, useDashboardTheme } from './components/ThemeSwitcher';
+import { useDashboardTheme } from './components/ThemeSwitcher';
 import { storage } from './services/storage';
 import { translations, Language } from './locales/translations';
 import { Team, User } from './types';
@@ -97,7 +97,6 @@ export default function App() {
   return (
     <div className={`mkt-shell theme-${theme} min-h-screen flex flex-col font-sans`}>
       
-      <ThemeSwitcher theme={theme} onChange={setTheme} />
       {/* Global Header */}
       <Header
         currentView={currentView}
@@ -182,6 +181,8 @@ export default function App() {
 
           {currentView === 'settings' && (
             <SettingsView
+              theme={theme}
+              onThemeChange={setTheme}
               onOpenGasDocs={() => setShowGasDocsModal(true)}
             />
           )}

@@ -20,12 +20,15 @@ import { GasService } from '../services/gasService';
 import { translations, Language } from '../locales/translations';
 import { AppSettings } from '../types';
 import { APP_VERSION } from '../services/appUpdates';
+import { ThemeSwitcher, type DashboardTheme } from '../components/ThemeSwitcher';
 
 interface SettingsViewProps {
   onOpenGasDocs: () => void;
+  theme: DashboardTheme;
+  onThemeChange: (theme: DashboardTheme) => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme, onThemeChange }) => {
   const currentUser = storage.getCurrentUser();
   const settings = storage.getSettings();
   const lang: Language = settings.language;
@@ -153,6 +156,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs }) => 
             : 'Configure currency, contract alert days, thresholds, and Google Sheets backend integration'}
         </p>
       </div>
+
+      <ThemeSwitcher theme={theme} onChange={onThemeChange} language={lang} />
 
       {saveSuccess && (
         <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center gap-2 shadow-xs">
