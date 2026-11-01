@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { DEPLOYED_BACKEND_URL, resolveBackendUrl } from '../src/config/backend';
+import { DEPLOYED_BACKEND_URL, resolveBackendUrl, isRetiredBackend } from '../src/config/backend';
 import { INITIAL_SETTINGS } from '../src/data/seedData';
 
 assert.equal(resolveBackendUrl(undefined,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
@@ -7,6 +7,10 @@ assert.equal(resolveBackendUrl('',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
 assert.equal(resolveBackendUrl('   ',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
 const retired='https://script.google.com/macros/s/AKfycbxt7FMAsx19pzuuMUB8xheP4aJtsZvjD_3W1qW5fjyZmvrgfIHCt7-TtC-QFwrCmiDu/exec';
 assert.equal(resolveBackendUrl(retired,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'existing devices migrate from the retired URL');
+const previous='https://script.google.com/macros/s/AKfycbzqRrcFZcabexZCXH7okCcWOqTuJOc2CsBq4sKz7m9sLjBdz_bEYWslfsgl4-HWY-gT/exec';
+assert.equal(isRetiredBackend(previous),true);
+assert.equal(isRetiredBackend(DEPLOYED_BACKEND_URL),false);
+assert.equal(resolveBackendUrl(previous,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'existing devices migrate from the immediately previous deployment');
 const custom='https://script.google.com/macros/s/custom-deployment/exec';
 assert.equal(resolveBackendUrl(' '+custom+' ',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'production uses one Admin-owned source on every device');
 assert.equal(resolveBackendUrl(custom,''),custom,'local development can still select an explicit endpoint');
@@ -45,6 +49,8 @@ assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL,'old blank
 assert.equal(storage.getCurrentUser(),null,'cached user without backend session must sign in again');
 local.set('mkt_settings_v1',JSON.stringify({...storage.getSettings(),appsScriptUrl:retired}));storage.init();
 assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL);
+local.set('mkt_settings_v1',JSON.stringify({...storage.getSettings(),appsScriptUrl:previous}));storage.init();
+assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL,'cached previous endpoint migrates without visiting Settings');
 assert.throws(()=>storage.updateSettings({appsScriptUrl:''}),/Admin permission/);
 storage.setCurrentUser({...user,id:'fixture-admin',username:'admin',role:'ADMIN',team:'ALL'});
 storage.updateSettings({appsScriptUrl:''});
