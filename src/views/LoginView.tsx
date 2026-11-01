@@ -9,14 +9,20 @@ export const LoginView: React.FC = () => {
   const t = translations[lang];
 
   const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('CHANGE_ME_ADMIN_PASSWORD');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const [backendUrl, setBackendUrl] = useState(settings.appsScriptUrl);
+  const [signingIn, setSigningIn] = useState(false);
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    const res = storage.login(username, password);
+    setSigningIn(true);
+    if (backendUrl.trim() !== settings.appsScriptUrl) storage.updateSettings({appsScriptUrl:backendUrl.trim()});
+    const res = await storage.login(username, password);
+    setSigningIn(false);
     if (!res.success) {
       setError(res.message || 'Login failed');
     }
@@ -58,6 +64,9 @@ export const LoginView: React.FC = () => {
           )}
 
           <form onSubmit={handleLogin} className="space-y-5">
+            <label className="block text-xs text-slate-300">Google Apps Script URL (/exec)
+              <input type="url" value={backendUrl} onChange={e=>setBackendUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec" className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-800 p-2 text-white" />
+            </label>
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 {lang === 'lo' ? 'ຊື່ຜູ້ໃຊ້ງານ (USERNAME)' : 'Username'}
@@ -110,10 +119,10 @@ export const LoginView: React.FC = () => {
             </div>
 
             <button
-              type="submit"
+              type="submit" disabled={signingIn}
               className="mt-2 w-full flex items-center justify-center gap-2 py-3 px-4 border border-transparent rounded-xl shadow-lg text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition cursor-pointer active:scale-[0.98]"
             >
-              <span>{t.login}</span>
+              <span>{signingIn ? 'Signing in…' : t.login}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>

@@ -5,6 +5,7 @@
  */
 
 import { storage } from './storage';
+import { remoteSession } from './remoteAccounts';
 
 export interface GasResponse<T = unknown> {
   success: boolean;
@@ -104,6 +105,7 @@ export class GasService {
         body: JSON.stringify({
           action,
           payload,
+          authToken: remoteSession(endpoint)?.token,
           timestamp: new Date().toISOString()
         })
       });

@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
@@ -30,13 +31,16 @@ function backend(options = {}) {
     }
     appendRow(row) { this.rows.push([...row]); }
     setFrozenRows() {}
+    deleteRow(row) { this.rows.splice(row-1,1); }
   }
   const ss = { getId: () => 'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
   const context = vm.createContext({
-    PropertiesService: { getScriptProperties: () => ({ getProperty: () => options.property === undefined ? ss.getId() : options.property }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'INITIAL_ADMIN_PASSWORD' ? (options.adminPassword === undefined ? 'Test-only-password-42!' : options.adminPassword) : (options.property === undefined ? ss.getId() : options.property) }) },
     SpreadsheetApp: { openById: id => { assert.equal(id, ss.getId()); return ss; }, getActiveSpreadsheet: () => options.bound ? ss : null, flush() {} },
     LockService: { getScriptLock: () => ({ waitLock() { held = true; }, hasLock: () => held, releaseLock() { assert.ok(held); held = false; } }) },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: s => ({ setMimeType: () => JSON.parse(s) }) },
+    Utilities: {getUuid:()=>crypto.randomUUID(),DigestAlgorithm:{SHA_256:'sha256'},computeDigest:(_,s)=>[...crypto.createHash('sha256').update(s).digest()]},
+    CacheService: {getScriptCache:()=>({get:()=>null,put(){},remove(){}})},
     Logger: { log() {} }
   });
   vm.runInContext(source, context);
@@ -85,7 +89,7 @@ test('invalid later table is rejected before any table is written', () => {
 });
 test('legacy initializeDatabase remains idempotent and accepts extended sync columns', () => {
   const b = backend(); b.context.initializeDatabase(); b.context.initializeDatabase();
-  assert.equal(b.sheets.size, 10); assert.equal(b.sheets.get('USERS').rows.length, 9);
+  assert.equal(b.sheets.size, 10); assert.equal(b.sheets.get('USERS').rows.length, 2);
   assert.equal(b.post(payload()).success, true);
   assert.equal(b.sheets.get('CUSTOMER_CONDITIONS').rows[0].at(-1), 'Price per Unit');
 });
@@ -119,4 +123,56 @@ test('bound Sheet fallback works; missing config gives setup instructions instea
 test('full Sheet URL in Script Properties extracts the ID; invalid config is rejected', () => {
  assert.equal(backend({ property: 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID_0123456789/edit' }).context.getSpreadsheet().getId(), 'TEST_SHEET_ID_0123456789');
  assert.throws(() => backend({ property: 'bad' }).context.getSpreadsheet(), /Invalid SPREADSHEET_ID/);
+});
+
+function userRequest(b, action, payload={}, authToken) {
+ return b.context.doPost({postData:{contents:JSON.stringify({action,payload,authToken})}});
+}
+function signedInBackend() {
+ const b=backend(); b.context.initializeDatabase();
+ const login=userRequest(b,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});
+ assert.equal(login.success,true);return {b,login};
+}
+test('user bootstrap hashes passwords and login returns only safe fields and an opaque session',()=>{
+ const {b,login}=signedInBackend();
+ assert.match(b.sheets.get('USERS').rows[1][2], /^\$2[aby]\$/);
+ assert.ok(!JSON.stringify(b.sheets.get('USERS').rows).includes('Test-only-password-42!'));
+ assert.equal(login.user.password,undefined);assert.equal(login.user.passwordHash,undefined);
+ assert.ok(!JSON.stringify(b.sheets.get('SESSIONS').rows).includes(login.token));
+ assert.equal(userRequest(b,'AUTH_LOGIN',{username:'admin',password:'incorrect'}).success,false);
+ assert.equal(userRequest(b,'ADD_USER',{username:'evil',role:'ADMIN',password:'Test-only-password-42!'}).success,false);
+});
+test('admin sync saves users once; independent login uses Sheet credentials; role checks reject forged admin',()=>{
+ const {b,login}=signedInBackend();
+ const data={username:'team1',fullName:'Team One',role:'TEAM_USER',team:'B1',password:'Test-team-password-42!'};
+ const synced=userRequest(b,'SYNC_USERS',{users:[data]},login.token);assert.equal(synced.success,true);
+ assert.equal(userRequest(b,'SYNC_USERS',{users:[data]},synced.token).success,true);
+ assert.equal(b.sheets.get('USERS').rows.length,3);
+ const teamLogin=userRequest(b,'AUTH_LOGIN',{username:'team1',password:'Test-team-password-42!'});
+ assert.equal(teamLogin.success,true);assert.equal(teamLogin.user.team,'B1');
+ assert.equal(userRequest(b,'GET_USERS',{role:'ADMIN'},teamLogin.token).success,false);
+ assert.equal(userRequest(b,'UPDATE_USER',{id:login.user.id,role:'ADMIN'},teamLogin.token).success,false);
+ assert.equal(synced.users.find(u=>u.username==='team1').password,undefined);
+});
+test('password reset invalidates old sessions, disable blocks login, and delete persists in USERS',()=>{
+ const {b,login}=signedInBackend();
+ const add=userRequest(b,'ADD_USER',{username:'team2',fullName:'Team Two',role:'TEAM_USER',team:'B2',password:'Test-team-password-42!'},login.token);
+ const user=add.users.find(u=>u.username==='team2');
+ const old=userRequest(b,'AUTH_LOGIN',{username:'team2',password:'Test-team-password-42!'});
+ const reset=userRequest(b,'RESET_USER_PASSWORD',{id:user.id,password:'New-test-password-42!'},add.token);assert.equal(reset.success,true);
+ assert.equal(userRequest(b,'AUTH_ME',{},old.token).success,false);
+ assert.equal(userRequest(b,'AUTH_LOGIN',{username:'team2',password:'Test-team-password-42!'}).success,false);
+ assert.equal(userRequest(b,'AUTH_LOGIN',{username:'team2',password:'New-test-password-42!'}).success,true);
+ const disabled=userRequest(b,'UPDATE_USER',{id:user.id,isActive:false},reset.token);assert.equal(disabled.success,true);
+ assert.equal(userRequest(b,'AUTH_LOGIN',{username:'team2',password:'New-test-password-42!'}).success,false);
+ assert.equal(userRequest(b,'DELETE_USER',{id:user.id},disabled.token).success,true);
+ assert.ok(!b.sheets.get('USERS').rows.some(r=>r[0]===user.id));
+ assert.equal(userRequest(b,'DELETE_USER',{id:login.user.id},disabled.token).success,false);
+});
+test('bootstrap requires a private password property and migrates legacy plaintext without losing accounts',()=>{
+ const b=backend({adminPassword:null});assert.throws(()=>b.context.initializeDatabase(),/INITIAL_ADMIN_PASSWORD/);
+ const legacy=backend();legacy.context.userTables_();legacy.sheets.get('USERS').appendRow(['old','admin','Old-pass-42!','Old Admin','','ADMIN','ALL',true,'','']);
+ legacy.context.initializeUsers_();assert.equal(legacy.sheets.get('USERS').rows.length,2);
+ assert.match(legacy.sheets.get('USERS').rows[1][2],/^\$2[aby]\$/);
+ assert.equal(userRequest(legacy,'AUTH_LOGIN',{username:'admin',password:'Old-pass-42!'}).success,true);
 });

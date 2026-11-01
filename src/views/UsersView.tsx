@@ -35,6 +35,10 @@ export const UsersView: React.FC = () => {
   const [logs, setLogs] = useState(storage.getLogs(150));
   const [searchQuery, setSearchQuery] = useState('');
   const [teamFilter, setTeamFilter] = useState<Team | 'ALL'>('ALL');
+  const [sheetUsername, setSheetUsername] = useState('admin');
+  const [sheetPassword, setSheetPassword] = useState('');
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [connected, setConnected] = useState(storage.hasRemoteUserSession());
   const [showPasswords, setShowPasswords] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -70,7 +74,7 @@ export const UsersView: React.FC = () => {
     setEditingUser(u);
     setEditFullName(u.fullName);
     setEditUsername(u.username);
-    setEditPassword(u.password || `${u.username}_123`);
+    setEditPassword(settings.appsScriptUrl ? '' : (u.password || `${u.username}_123`));
     setEditRole(u.role);
     setEditTeam(u.team === 'ALL' ? 'B1' : u.team);
     setEditEmail(u.email || '');
@@ -78,15 +82,15 @@ export const UsersView: React.FC = () => {
     setEditError(null);
   };
 
-  const handleSaveEdit = (e: React.FormEvent) => {
+  const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
     setEditError(null);
 
-    const res = storage.updateUser(editingUser.id, {
+    const res = await storage.updateUser(editingUser.id, {
       fullName: editFullName.trim(),
       username: editUsername.trim(),
-      password: editPassword.trim(),
+      password: editPassword,
       role: editRole,
       team: editRole === 'ADMIN' ? 'ALL' : editTeam,
       email: editEmail.trim(),
@@ -106,13 +110,13 @@ export const UsersView: React.FC = () => {
     }
   };
 
-  const handleAddUser = (e: React.FormEvent) => {
+  const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setAddError(null);
 
-    const res = storage.addUser({
+    const res = await storage.addUser({
       username: newUsername.trim(),
-      password: newPassword.trim() || undefined,
+      password: settings.appsScriptUrl ? newPassword : (newPassword.trim() || `${newUsername.trim()}_123`),
       fullName: newFullName.trim(),
       role: newRole,
       team: newRole === 'ADMIN' ? 'ALL' : newTeam,
@@ -136,27 +140,29 @@ export const UsersView: React.FC = () => {
     }
   };
 
-  const handleResetPassword = (u: UserType) => {
-    const defaultPw = `${u.username}_123`;
-    const res = storage.resetUserPassword(u.id, defaultPw);
+  const handleResetPassword = async (u: UserType) => {
+    const defaultPw = settings.appsScriptUrl ? window.prompt('New password (8–72 characters)') : `${u.username}_123`;
+    if (!defaultPw) return;
+    const res = await storage.resetUserPassword(u.id, defaultPw);
     if (res.success) {
       refreshUsers();
       setAlertMessage({
-        text: `ຣີເຊັດລະຫັດຜ່ານຂອງ ${u.username} ເປັນ "${defaultPw}" ສຳເລັດແລ້ວ!`,
+        text: settings.appsScriptUrl ? `Password for ${u.username} saved securely to USERS` : `ຣີເຊັດລະຫັດຜ່ານຂອງ ${u.username} ເປັນ "${defaultPw}" ສຳເລັດແລ້ວ!`,
         type: 'success'
       });
       setTimeout(() => setAlertMessage(null), 4000);
-    }
+    } else { setAlertMessage({text:res.message,type:'error'}); }
   };
 
-  const handleToggleStatus = (u: UserType) => {
-    storage.updateUser(u.id, { isActive: !u.isActive });
+  const handleToggleStatus = async (u: UserType) => {
+    const res = await storage.updateUser(u.id, { isActive: !u.isActive });
     refreshUsers();
+    setAlertMessage({text:res.message,type:res.success ? 'success' : 'error'});
   };
 
-  const handleDeleteUser = (u: UserType) => {
+  const handleDeleteUser = async (u: UserType) => {
     if (confirm(`ທ່ານແນ່ໃຈບໍ່ວ່າຕ້ອງການລຶບບັນຊີ ${u.username} (${u.fullName})?`)) {
-      const res = storage.deleteUser(u.id);
+      const res = await storage.deleteUser(u.id);
       if (res.success) {
         refreshUsers();
         setAlertMessage({
@@ -172,7 +178,7 @@ export const UsersView: React.FC = () => {
 
   const copyCredentials = (u: UserType) => {
     const pw = u.password || `${u.username}_123`;
-    const text = `Username: ${u.username}\nPassword: ${pw}\nRole: ${u.role === 'ADMIN' ? 'Admin' : `Team ${u.team}`}`;
+    const text = `Username: ${u.username}\n${settings.appsScriptUrl ? "" : `Password: ${pw}\n`}Role: ${u.role === 'ADMIN' ? 'Admin' : `Team ${u.team}`}`;
     navigator.clipboard.writeText(text);
     setCopiedId(u.id);
     setTimeout(() => setCopiedId(null), 2000);
@@ -191,8 +197,34 @@ export const UsersView: React.FC = () => {
     return matchesTeam && matchesQuery;
   });
 
+  const sheetOperation = async (operation: () => Promise<{success:boolean;message?:string}>) => {
+    if (accountBusy) return;
+    setAccountBusy(true);
+    try {
+      const result = await operation();
+      setConnected(storage.hasRemoteUserSession());
+      refreshUsers();
+      setAlertMessage({text:result.message || (result.success ? 'Connected to Sheets' : 'Operation failed'),type:result.success ? 'success' : 'error'});
+      if (result.success) setSheetPassword('');
+    } finally { setAccountBusy(false); }
+  };
+
   return (
     <div className="space-y-6">
+      {settings.appsScriptUrl && <section className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+        <h3 className="font-bold text-slate-900">User accounts → Google Sheet USERS</h3>
+        <p className="text-xs text-slate-600">{lang === 'lo' ? 'ເຂົ້າລະບົບ backend ດ້ວຍ Admin ກ່ອນ. ກົດ Sync Users ເພື່ອຍ້າຍບັນຊີເກົ່າໃນ browser ໄປ Sheet. ຫຼັງຈາກນັ້ນການເພີ່ມ/ແກ້ User ຈະຂຽນລົງ Sheet ໂດຍກົງ.' : 'Sign in as a backend Admin. Sync Users migrates this browser’s accounts to Sheets. Subsequent user changes are written directly to Sheets.'}</p>
+        {!connected && <div className="flex flex-wrap gap-2">
+          <input aria-label="Sheet admin username" value={sheetUsername} onChange={e=>setSheetUsername(e.target.value)} className="rounded-xl border p-2 text-slate-900" />
+          <input aria-label="Sheet admin password" type="password" value={sheetPassword} onChange={e=>setSheetPassword(e.target.value)} className="rounded-xl border p-2 text-slate-900" />
+          <button type="button" disabled={accountBusy} onClick={()=>sheetOperation(()=>storage.login(sheetUsername,sheetPassword))} className="rounded-xl bg-blue-600 px-4 py-2 text-white">Sign in to Sheets</button>
+        </div>}
+        {connected && <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={accountBusy} onClick={()=>sheetOperation(()=>storage.syncUsersToSheets())} className="rounded-xl bg-emerald-600 px-4 py-2 text-white">Sync Users → Sheet</button>
+          <button type="button" disabled={accountBusy} onClick={()=>sheetOperation(()=>storage.loadUsersFromSheets())} className="rounded-xl border px-4 py-2 text-slate-800">Load Users from Sheet</button>
+        </div>}
+        {accountBusy && <p role="status" className="text-xs text-blue-700">Saving user accounts…</p>}
+      </section>}
       
       {/* Alert Notification */}
       {alertMessage && (
@@ -306,13 +338,14 @@ export const UsersView: React.FC = () => {
         {activeTab === 'USERS' && (
           <div className="flex items-center gap-2">
             <button
+              disabled={!!settings.appsScriptUrl} title={settings.appsScriptUrl ? "Passwords are hashed in Sheets and cannot be retrieved" : undefined}
               onClick={() => setShowPasswords(!showPasswords)}
               className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-xl border transition cursor-pointer ${
                 showPasswords
                   ? 'bg-amber-50 text-amber-800 border-amber-300'
                   : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
               }`}
-              title="ສະແດງ / ເຊື່ອງລະຫັດຜ່ານ"
+              
             >
               {showPasswords ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               <span>{showPasswords ? 'ເຊື່ອງລະຫັດຜ່ານ' : 'ສະແດງລະຫັດຜ່ານ'}</span>
@@ -381,7 +414,7 @@ export const UsersView: React.FC = () => {
                 <tbody className="divide-y divide-slate-100 text-slate-800">
                   {filteredUsers.map((u) => {
                     const isAdmin = u.role === 'ADMIN';
-                    const userPw = u.password || `${u.username}_123`;
+                    const userPw = settings.appsScriptUrl ? 'Stored as hash in USERS' : (u.password || `${u.username}_123`);
 
                     return (
                       <tr key={u.id} className="hover:bg-slate-50/80 transition">
@@ -436,7 +469,7 @@ export const UsersView: React.FC = () => {
                             <button
                               onClick={() => copyCredentials(u)}
                               className="p-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
-                              title="ກ໊ອບປີ້ Username & Password"
+                              title={settings.appsScriptUrl ? "Copy username and role" : "Copy username and password"}
                             >
                               {copiedId === u.id ? (
                                 <Check className="w-3.5 h-3.5 text-emerald-600" />
@@ -489,7 +522,7 @@ export const UsersView: React.FC = () => {
                             <button
                               onClick={() => handleResetPassword(u)}
                               className="p-1 text-xs font-semibold text-slate-500 hover:text-amber-600 hover:bg-amber-50 border border-slate-200 rounded-lg transition cursor-pointer"
-                              title={`ຣີເຊັດລະຫັດຜ່ານເປັນ ${u.username}_123`}
+                              title={settings.appsScriptUrl ? 'ຕັ້ງລະຫັດຜ່ານໃໝ່ໃນ Sheet' : `ຣີເຊັດລະຫັດຜ່ານເປັນ ${u.username}_123`}
                             >
                               <RotateCcw className="w-3.5 h-3.5" />
                             </button>
@@ -642,8 +675,9 @@ export const UsersView: React.FC = () => {
                   ລະຫັດຜ່ານໃໝ່ (Password) <span className="text-rose-500">*</span>
                 </label>
                 <input
-                  type="text"
-                  required
+                  type="password"
+                  required={!settings.appsScriptUrl}
+                  placeholder={settings.appsScriptUrl ? 'ປະຫວ່າງເພື່ອໃຊ້ລະຫັດເດີມ' : ''}
                   value={editPassword}
                   onChange={(e) => setEditPassword(e.target.value)}
                   className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white text-slate-900"
@@ -798,8 +832,10 @@ export const UsersView: React.FC = () => {
                   ລະຫັດຜ່ານ (Password)
                 </label>
                 <input
-                  type="text"
-                  placeholder="ຖ້າປະຫວ່າງ ຈະເປັນ: [username]_123"
+                  type="password"
+                  required={!!settings.appsScriptUrl}
+                  minLength={settings.appsScriptUrl ? 8 : undefined}
+                  placeholder={settings.appsScriptUrl ? 'ລະຫັດຜ່ານ 8–72 ຕົວອັກສອນ' : 'ຖ້າປະຫວ່າງ ຈະເປັນ: [username]_123'}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white text-slate-900"

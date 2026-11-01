@@ -2,7 +2,7 @@
 
 Existing MKT Budget React/Vite application, including five dashboard themes, customers, contract cycles, budgets, transactions, reports, user management, and Google Apps Script integration.
 
-Source version: **2026.10.31.4**. Imported from the project maintained in this conversation, Sites source commit `4e3cb6a6a3dda87357a60f37fbe3bace25ee8f5f`.
+Source version: **2026.10.31.6**. Includes Google Sheets user accounts, backend login, and bcrypt password storage.
 
 ## Run locally
 
@@ -20,6 +20,7 @@ Open the Vite URL shown in the terminal (default port 3000). Use npm/package-loc
 ```sh
 npm run lint
 node tests/gas-sync.test.cjs
+node --import tsx tests/remote-accounts.test.ts
 node --import tsx tests/gas-service.test.ts
 node --import tsx tests/app-updates.test.ts
 npm run build
@@ -30,14 +31,16 @@ The build creates `dist/` and copies it to `docs/`. Preview serves the last prod
 
 ## Google Sheets sync
 
+For user accounts and passwords, follow [`gas/USER-ACCOUNTS.md`](gas/USER-ACCOUNTS.md). Configure `SPREADSHEET_ID` and your private `INITIAL_ADMIN_PASSWORD` in Apps Script Script Properties, run `initializeDatabase()`, and deploy a new backend version. Sign in to the Sheets backend, then use **Sync Users → Sheet** once to migrate existing browser accounts. Subsequent user edits write directly to USERS. Passwords are stored as bcrypt hashes, and are never returned by the API.
+
 Install **only** [`gas/Code.gs`](gas/Code.gs) in Apps Script. It includes database initialization and the optional legacy import function. Do not additionally paste the separate legacy DatabaseSetup.gs / CustomerImport.gs files into the same Apps Script project.
 
 Follow [`gas/SYNC-SETUP.md`](gas/SYNC-SETUP.md) for deployment and Settings setup. Sync is manual and one-way from the app to Sheets, using IDs to update or insert records. Missing rows are not deleted. The app keeps its working data in browser localStorage. A successful connection test alone does not confirm a Sheet write.
 
 ## Validation limits
 
-TypeScript, the production build, backend mock tests and frontend service tests passed. Save feedback and update notices were checked with DOM simulation. Live browser behavior and a write to a deployed Apps Script/real Sheet still require verification. No automatic GitHub Pages deployment is enabled in this source export.
+TypeScript, the production build, backend mock tests and frontend service tests passed. Live browser behavior and a write to a deployed Apps Script/real Sheet still require verification after installation. The GitHub Actions workflow checks, builds, deploys, and verifies the published HTML and compiled assets on pushes to main. Set the repository's Pages source to GitHub Actions.
 
 ## Public source export
 
-The live spreadsheet identifier was replaced with `YOUR_SPREADSHEET_ID`. Default passwords were replaced with explicit `CHANGE_ME_...` placeholders and sample emails use example.invalid. Set your own values before using the app. Unused source-reference screenshots and automatic deployment workflows were excluded. These export changes do not change the currently hosted Site. The client-side demonstration login is not server-side authentication.
+This export contains no live spreadsheet identifier or account credentials. Configure private values in Apps Script. Local demonstration accounts use `CHANGE_ME_...` placeholders. Server-side session and role checks protect user-account endpoints; legacy business-data endpoints retain their previous behavior. The separate Sites-hosted source is unchanged by this GitHub release.

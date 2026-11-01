@@ -32,6 +32,12 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Check TypeScript
         run: npm run lint
+      - name: Test Sheets sync and user accounts
+        run: |
+          node tests/gas-sync.test.cjs
+          node --import tsx tests/remote-accounts.test.ts
+          node --import tsx tests/gas-service.test.ts
+          node --import tsx tests/app-updates.test.ts
       - name: Build the application
         run: npm run build
       - name: Configure Pages

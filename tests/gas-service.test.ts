@@ -36,6 +36,6 @@ assert.equal((await GasService.syncAllToGoogleSheets(endpoint)).success, false);
 globalThis.fetch = async () => new Response(JSON.stringify({ success: false, error: 'Sheet write failed' }));
 assert.deepEqual(await GasService.syncAllToGoogleSheets(endpoint), { success: false, message: 'Sheet write failed' });
 assert.equal((await GasService.testConnection(endpoint)).success, false);
-storage.login('b1_user', 'CHANGE_ME_TEAM_B1_PASSWORD');
+await storage.login('b1_user', 'CHANGE_ME_TEAM_B1_PASSWORD');
 assert.equal((await GasService.syncAllToGoogleSheets(endpoint)).success, false);
 console.log('PASS: complete snapshot, defensive copy, credential exclusion, HTTP payload, URL validation, backend failures, and team-user restriction');
