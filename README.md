@@ -2,7 +2,7 @@
 
 Existing MKT Budget React/Vite application, including five dashboard themes, customers, contract cycles, budgets, transactions, reports, user management, and Google Apps Script integration.
 
-Source version: **2026.11.01.7**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. An explicit backend saved by Admin still takes precedence. Local development retains the separate demo mode. Theme selection is in Settings and saves immediately per user in this browser. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. This frontend fix works with the existing 2026.10.31.6 Code.gs backend.
+Source version: **2026.11.01.8**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. An explicit backend saved by Admin still takes precedence. Local development retains the separate demo mode. Theme selection is in Settings and saves immediately per user in this browser. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. Business-data loading requires installing this release’s updated Code.gs.
 
 ## Run locally
 
@@ -23,6 +23,7 @@ node tests/gas-sync.test.cjs
 node --import tsx tests/remote-accounts.test.ts
 node --import tsx tests/customer-delete.test.ts
 node --import tsx tests/deployment-backend.test.ts
+node --import tsx tests/sheet-business-read.test.ts
 node --import tsx tests/gas-service.test.ts
 node --import tsx tests/app-updates.test.ts
 npm run build
@@ -33,7 +34,7 @@ The build creates `dist/` and copies it to `docs/`. Preview serves the last prod
 
 ## Login on another device
 
-Open the published FOC Support URL and sign in with an account already saved in the Sheet USERS table. The production build automatically selects the shared Apps Script backend from `src/config/backend.ts`; Login asks only for username and password. Explicit Admin backend overrides remain available in Settings. Private passwords and session tokens are not included in the deployment configuration. Browser-only accounts must be migrated from their original browser first. This fixes account login across devices; customer and budget data remains browser-local under the existing manual sync design.
+Open the published FOC Support URL and sign in with an account already saved in the Sheet USERS table. The production build automatically selects the shared Apps Script backend from `src/config/backend.ts`; Login asks only for username and password. Explicit Admin backend overrides remain available in Settings. Private passwords and session tokens are not included in the deployment configuration. Browser-only accounts must be migrated from their original browser first. After login and on reopening the app with a valid session, the app reads customers, conditions, contracts, budgets and transactions from Sheets. Admin receives all teams; other users receive only their server-assigned B1–B7 team. Untouched demo data is replaced by Sheet data; new production browsers start empty rather than showing sample customers. Local edits are protected from automatic replacement. Install the updated Code.gs as described in [gas/READ-FROM-SHEETS.md](gas/READ-FROM-SHEETS.md).
 
 ## Google Sheets sync
 
@@ -41,13 +42,19 @@ For user accounts and passwords, follow [`gas/USER-ACCOUNTS.md`](gas/USER-ACCOUN
 
 Install **only** [`gas/Code.gs`](gas/Code.gs) in Apps Script. It includes database initialization and the optional legacy import function. Do not additionally paste the separate legacy DatabaseSetup.gs / CustomerImport.gs files into the same Apps Script project.
 
-Follow [`gas/SYNC-SETUP.md`](gas/SYNC-SETUP.md) for deployment and Settings setup. Sync is manual and one-way from the app to Sheets, using IDs to update or insert records. Missing rows are not deleted. The app keeps its working data in browser localStorage. A successful connection test alone does not confirm a Sheet write.
+Follow [`gas/SYNC-SETUP.md`](gas/SYNC-SETUP.md) for deployment and Settings setup. Upload remains a manual Admin action, using IDs to update or insert records. Authenticated Sheet reads now populate the browser cache after login or with “Load from Sheet”. Missing rows are not deleted. The app keeps its working data in browser localStorage. A successful connection test alone does not confirm a Sheet write.
 
 ## Store deletion
 
 The customer-list trash button lets Admins remove any store and team users remove only stores assigned to their own B1–B7 team. The storage mutation checks the same permission independently of button visibility. Confirmation identifies the store; deletion sets Status to DELETED, hides the store from active lists and dashboard totals, and keeps contract, budget and transaction history for audit. New transactions, contract cycles, and budget changes are blocked for deleted stores. Customer codes remain reserved.
 
-Business data remains browser-local. An Admin must use the existing manual Sync to Google Sheets to send the DELETED status to CUSTOMERS; this does not physically remove Sheet rows or automatically send a team user’s local change to Sheets. The existing Code.gs handles the status with no reinstall. Deletion permissions here apply to the app’s local data service; legacy business endpoints retain their previous authorization behavior.
+Edits remain in this browser until uploaded. An Admin must use the existing manual Sync to Google Sheets to send the DELETED status to CUSTOMERS; this does not physically remove Sheet rows or automatically send a team user’s local change to Sheets. Other devices receive the deletion on their next Sheet read. Deletion permissions here apply to the app’s local data service; legacy business endpoints retain their previous authorization behavior.
+
+## Data loading and local edits
+
+Read the deployment guide in [gas/READ-FROM-SHEETS.md](gas/READ-FROM-SHEETS.md). Reads require a server session; the backend ignores caller-supplied team/role and filters linked tables by the authenticated account. The old unauthenticated getCustomers GET is disabled. No credentials, sessions, global settings, or unrelated audit logs are returned. Financial values, including zero quantities and negative balances, are retained rather than regenerated.
+
+Before automatic replacement the app compares its cache with the last loaded/uploaded baseline. Unsynced edits are kept, including edits made while a read is in flight. Explicit replacement prompts the user and downloads a JSON backup first. Malformed responses, unsupported backend versions, stale account responses and failed reads do not replace the cache. This is manual upload plus authenticated snapshot reads, not live per-edit writes, merging, polling, or full multi-user conflict resolution.
 
 ## Validation limits
 

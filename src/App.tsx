@@ -16,6 +16,7 @@ import { Team, User } from './types';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { SheetDataNotice } from './components/SheetDataNotice';
 
 // Views
 import { LoginView } from './views/LoginView';
@@ -41,6 +42,10 @@ export default function App() {
   const [selectedTeam, setSelectedTeam] = useState<Team | 'ALL'>('ALL');
   const [navigationOpen, setNavigationOpen] = useState(false);
   const { theme, setTheme } = useDashboardTheme(currentUser?.username || 'guest');
+  const backendUrl=storage.getSettings().appsScriptUrl;
+  useEffect(()=>{
+    if(currentUser && backendUrl && storage.hasRemoteUserSession())void storage.loadBusinessFromSheets();
+  },[currentUser?.id,backendUrl]);
 
   // Modal States
   const [detailCustomerCode, setDetailCustomerCode] = useState<string | null>(null);
@@ -121,6 +126,7 @@ export default function App() {
 
         {/* Main Content Area */}
         <main className="mkt-main flex-1 p-4 sm:p-6 lg:p-8 min-w-0 overflow-y-auto">
+          <SheetDataNotice />
           {currentView === 'dashboard' && (
             <DashboardView
               selectedTeam={selectedTeam}

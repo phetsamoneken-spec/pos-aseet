@@ -18,7 +18,7 @@
 - Passwords and hashes are never returned by the users API. Remote cached user records contain no newly entered plaintext password. The original local-only mode remains available when no Apps Script URL is configured.
 - Legacy browser passwords are sent only in the authenticated migration request and hashed by the server. After successful migration the cached user list is replaced with password-free records. Never edit the Password Hash column manually.
 - User account sync is separate from the existing business-data Sync button. Account changes are saved directly after backend sign-in.
-- On another device, open the same published FOC Support app and use the Sheet account credentials. The production build supplies the shared backend automatically, with no URL field on Sign In. Business data is still browser-local; this change does not implement importing budgets/customers from Sheets.
+- On another device, open the same published FOC Support app and use the Sheet account credentials. The production build supplies the shared backend automatically, with no URL field on Sign In. Install this release’s Code.gs to enable authenticated customer/budget reads after login. See READ-FROM-SHEETS.md. Edits still need the manual Admin upload before other devices can read them.
 - This adds server authentication to **user-account endpoints**. Existing legacy business-data endpoints retain their prior behavior; it is not a complete authorization audit of the entire backend.
 
 ## Verification

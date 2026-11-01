@@ -1,3 +1,5 @@
+# Sheet → browser reads: see [READ-FROM-SHEETS.md](READ-FROM-SHEETS.md). The sections below describe the separate manual upload action.
+
 # User accounts: see [USER-ACCOUNTS.md](USER-ACCOUNTS.md) for private admin bootstrap and USERS synchronization.
 
 # MKT Budget — Code.gs ໄຟລ໌ດຽວ
@@ -11,7 +13,7 @@
 
 ## Behavior
 
-- Manual one-way app → Sheets sync. Click Sync after saving changes in the app. This does not automatically sync each edit and does not read Sheet edits back into the app.
+- Manual one-way app → Sheets sync. Click Sync after saving changes in the app. This upload does not automatically sync each edit. The separate authenticated GET_BUSINESS_DATA action reads Sheet data after login or via Load from Sheet.
 - Customers, conditions, all contract cycles, budgets, transactions (including cancellations), logs and saved app settings are sent. Passwords, sessions and browser authentication are not exported by bulk sync.
 - Existing records are updated by ID; new IDs are appended. Rows missing from the app remain in the Sheet. This includes records deleted locally: sync is non-destructive and will not delete them remotely.
 - Existing additional columns and formulas are retained. Duplicate IDs or an unexpected first-column header are rejected before business data is written.

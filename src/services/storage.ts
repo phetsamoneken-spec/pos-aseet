@@ -1,5 +1,6 @@
 import { accountRequest, clearRemoteSession, remoteSession, type AccountResponse } from './remoteAccounts';
 import { resolveBackendUrl } from '../config/backend';
+import { businessFingerprint, validateBusinessSnapshot, type BusinessSnapshot } from './businessData';
 /**
  * Local Data Storage and Business Logic Engine
  * Manages Persistence, Access Permissions, Budget Calculations, and Audit Logging
@@ -80,6 +81,65 @@ class StorageService {
   private settings: AppSettings = INITIAL_SETTINGS;
   private currentUser: User | null = null;
   private listeners: (() => void)[] = [];
+  private sheetLoadSequence = 0;
+  private sheetDataState: {status:'idle'|'loading'|'loaded'|'error'|'local';message:string} = {status:'idle',message:''};
+
+  public getSheetDataState() { return this.sheetDataState; }
+  private businessSnapshot(): BusinessSnapshot {
+    return {customers:this.customers,conditions:this.conditions,contracts:this.contracts,budgets:this.budgets,transactions:this.transactions};
+  }
+  public exportBusinessBackup() { return JSON.parse(JSON.stringify(this.businessSnapshot())) as BusinessSnapshot; }
+  public hasUnsyncedBusinessData(): boolean {
+    const snapshot=this.businessSnapshot(), fingerprint=businessFingerprint(snapshot);
+    try {
+      const baseline=JSON.parse(safeGetItem('mkt_sheet_business_baseline_v1') || 'null');
+      if(baseline?.endpoint===this.settings.appsScriptUrl && baseline.fingerprint===fingerprint) return false;
+    } catch {}
+    if(Object.values(snapshot).every(rows=>rows.length===0))return false;
+    return fingerprint!==businessFingerprint(generateSeedData());
+  }
+  public markBusinessSynced(endpoint:string, snapshot:BusinessSnapshot=this.businessSnapshot()) {
+    const fingerprint=businessFingerprint(snapshot);
+    safeSetItem('mkt_sheet_business_baseline_v1',JSON.stringify({endpoint,fingerprint}));
+    if(this.sheetDataState.status==='local' && endpoint===this.settings.appsScriptUrl && fingerprint===businessFingerprint(this.businessSnapshot())){
+      this.sheetDataState={status:'idle',message:'ບັນທຶກການແກ້ໄຂໄປ Sheet ແລ້ວ. ສາມາດໂຫຼດຂໍ້ມູນລ່າສຸດໄດ້.'};this.notify();
+    }
+  }
+  public async loadBusinessFromSheets(replaceLocal=false): Promise<{success:boolean;message:string}> {
+    const endpoint=this.settings.appsScriptUrl, actor=this.currentUser;
+    const token=remoteSession(endpoint)?.token;
+    if(!actor || !token)return {success:false,message:'Sign in to Sheets first.'};
+    const sequence=++this.sheetLoadSequence;
+    const publish=(status:typeof this.sheetDataState.status,message:string,success=false)=>{
+      if(sequence===this.sheetLoadSequence){this.sheetDataState={status,message};this.notify();}
+      return {success,message};
+    };
+    if(this.hasUnsyncedBusinessData()&&!replaceLocal)return publish('local','ມີຂໍ້ມູນໃນ browser ທີ່ຍັງບໍ່ Sync. ແອັບເກັບຂໍ້ມູນນີ້ໄວ້; ໃຫ້ Sync ຫຼືສຳຮອງກ່ອນໂຫຼດຈາກ Sheet.');
+    const before=businessFingerprint(this.businessSnapshot());
+    publish('loading','ກຳລັງໂຫຼດລູກຄ້າ ແລະງົບປະມານຈາກ Google Sheet…');
+    try {
+      const result=await accountRequest(endpoint,'GET_BUSINESS_DATA');
+      if(sequence!==this.sheetLoadSequence)return {success:false,message:'Newer read started; old response ignored.'};
+      if(this.currentUser?.id!==actor.id || this.settings.appsScriptUrl!==endpoint || remoteSession(endpoint)?.token!==token)return publish('error','Session changed. Please load from Sheet again.');
+      if(!result.success || result.dataVersion!==1){
+        const error=result.message || result.error || '';
+        if(result.success || /Unsupported action|Unknown action/.test(error))throw Error('ກະລຸນາໃຫ້ Admin ອັບເດດ Code.gs ແລະ Deploy → New version ກ່ອນໂຫຼດຂໍ້ມູນຈາກ Sheet.');
+        throw Error(error || 'Could not load Sheet data');
+      }
+      const scope=actor.role==='ADMIN'?'ALL':actor.team;
+      if(actor.role!=='ADMIN'&&!/^B[1-7]$/.test(scope))throw Error('Invalid assigned team');
+      if(result.scope!==scope)throw Error('Unexpected Sheet data scope');
+      const data=validateBusinessSnapshot(result.snapshot,scope);
+      if(before!==businessFingerprint(this.businessSnapshot()))return publish('local','ມີການແກ້ຂໍ້ມູນຂະນະກຳລັງໂຫຼດ. ແອັບເກັບການແກ້ໄຂໄວ້; ກະລຸນາ Sync ຫຼືສຳຮອງກ່ອນ.');
+      this.customers=data.customers;this.conditions=data.conditions;this.contracts=data.contracts;this.budgets=data.budgets;this.transactions=data.transactions;
+      if(result.spreadsheetId)this.settings.spreadsheetId=result.spreadsheetId;
+      this.markBusinessSynced(endpoint);
+      this.persistAll();
+      this.recalculateContractStatuses();
+      this.logAction('LOAD_FROM_SHEETS',`Loaded ${data.customers.length} customers from Sheet, scope ${scope}.`);
+      return publish('loaded',`ໂຫຼດຈາກ Sheet ສຳເລັດ: ${data.customers.filter(customer=>customer.status!=='DELETED').length} ຮ້ານ (${scope}).`,true);
+    } catch(error){return publish('error',error instanceof Error?error.message:String(error));}
+  }
 
   constructor() {
     this.init();
@@ -130,6 +190,8 @@ class StorageService {
         this.transactions = JSON.parse(safeGetItem(STORAGE_KEYS.TRANSACTIONS) || '[]');
         this.logs = JSON.parse(safeGetItem(STORAGE_KEYS.LOGS) || '[]');
 
+        // Sheet imports preserve the actual financial values, including zero and negative balances.
+        if (!safeGetItem('mkt_sheet_business_baseline_v1')) {
         // Synchronize and enforce formula: Annual Budget = Condition Quantity (crates) * Price per Crate
         const pricePerCrate = this.settings.pricePerCrate || 240000;
         let hasSyncChanges = false;
@@ -182,9 +244,12 @@ class StorageService {
         if (hasSyncChanges) {
           this.persistAll();
         }
+        }
       } else {
-        // First run: Generate complete seed dataset of 578 customers across B1-B7
-        this.resetToSeedData();
+        if (this.settings.appsScriptUrl) {
+          this.customers=[];this.conditions=[];this.contracts=[];this.budgets=[];this.transactions=[];this.logs=[];
+          this.persistAll();
+        } else this.resetToSeedData();
       }
 
       this.recalculateContractStatuses();

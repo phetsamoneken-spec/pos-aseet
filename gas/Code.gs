@@ -144,32 +144,7 @@ function doGet(e) {
     }
 
     if (action === "getCustomers") {
-      const team = (e.parameter && e.parameter.team) || "ALL";
-      const ss = getSpreadsheet();
-      const sheet = ss.getSheetByName("CUSTOMERS");
-      if (!sheet) {
-        return jsonResponse({ success: false, message: "CUSTOMERS sheet not found" });
-      }
-      const data = sheet.getDataRange().getValues();
-      const headers = data[0];
-      const customers = [];
-      for (let i = 1; i < data.length; i++) {
-        const row = data[i];
-        if (!row[0]) continue;
-        if (team !== "ALL" && row[2] !== team) continue;
-        customers.push({
-          code: row[0],
-          name: row[1],
-          team: row[2],
-          mde: row[3],
-          phone: row[4],
-          address: row[5],
-          province: row[6],
-          status: row[7],
-          createdAt: row[8]
-        });
-      }
-      return jsonResponse({ success: true, count: customers.length, data: customers });
+      return jsonResponse({success:false,message:"Sign in and use POST GET_BUSINESS_DATA to load your team's data."});
     }
 
     return jsonResponse({ success: false, message: "Unknown action" });
@@ -196,6 +171,7 @@ function doPost(e) {
 
     const action = postData.action;
     const payload = postData.payload || {};
+    if (action === 'GET_BUSINESS_DATA') return jsonResponse(readBusinessData_(postData.authToken));
     const userActions = ['AUTH_LOGIN','AUTH_ME','AUTH_LOGOUT','GET_USERS','SYNC_USERS','ADD_USER','UPDATE_USER','RESET_USER_PASSWORD','DELETE_USER','UPDATE_PROFILE'];
     if (userActions.indexOf(action) >= 0) return jsonResponse(handleUserAction_(action,payload,postData.authToken));
 
@@ -2029,3 +2005,49 @@ bcrypt.setRandomFallback(function(length) {
   }
   return bytes;
 });
+
+// Authenticated read model for the business tables. Never accepts a caller's team.
+function readBusinessData_(token) {
+  const ss = userTables_(), actor = requireSession_(ss,token,false);
+  const scope = actor[5] === 'ADMIN' ? 'ALL' : String(actor[6]);
+  if (actor[5] !== 'ADMIN' && !/^B[1-7]$/.test(scope)) throw new Error('Invalid assigned team');
+  function read(table) {
+    const sheet = ss.getSheetByName(table[1]);
+    if (!sheet) { if (table[0] === 'customers') throw new Error('CUSTOMERS sheet not found'); return []; }
+    const rows = sheet.getDataRange().getValues();
+    if (!rows.length) return [];
+    const headers = rows[0].map(function(value) {return String(value).trim();});
+    const keyColumn = headers.indexOf(table[2][0]);
+    if (keyColumn < 0) throw new Error(table[1]+': missing '+table[2][0]+' header');
+    return rows.slice(1).filter(function(row) {return String(row[keyColumn] || '').trim();}).map(function(row) {
+      const record={};
+      table[3].forEach(function(field,index) {
+        const column=headers.indexOf(table[2][index]); let value=column < 0 ? '' : row[column];
+        if (Object.prototype.toString.call(value) === '[object Date]') value=Utilities.formatDate(value,ss.getSpreadsheetTimeZone(),(['date','commencingOn','expiringOn'].indexOf(field)>=0 || field==='createdAt' && table[0]==='customers') ? 'yyyy-MM-dd' : "yyyy-MM-dd'T'HH:mm:ssXXX");
+        if (['conditionQuantity','pricePerUnit','cycleNumber','annualAmount','totalUsed','remainingAmount','utilizationPercentage','amount'].indexOf(field)>=0) {
+          if (value === '' && field === 'pricePerUnit') return;
+          value=Number(typeof value==='string' ? value.replace(/,/g,'').trim() : value);
+          if (!isFinite(value)) throw new Error(table[1]+': invalid '+field);
+        } else if (field==='allowException') value=value===true || String(value).toUpperCase()==='TRUE';
+        else value=String(value == null ? '' : value);
+        record[field]=value;
+      });
+      return record;
+    });
+  }
+  const snapshot={}; SYNC_TABLES.slice(0,5).forEach(function(table){snapshot[table[0]]=read(table);});
+  snapshot.customers=snapshot.customers.filter(function(customer){return scope==='ALL' || customer.team===scope;}).map(function(customer){
+    if (!/^B[1-7]$/.test(customer.team)) throw new Error('CUSTOMERS: invalid Team for '+customer.code);
+    customer.status=customer.status || 'ACTIVE'; customer.mde=customer.mde || 'MDE-'+customer.team;
+    return customer;
+  });
+  const codes=new Set(snapshot.customers.map(function(customer){return customer.code;}));
+  snapshot.conditions=snapshot.conditions.filter(function(row){return codes.has(row.customerCode);});
+  snapshot.contracts=snapshot.contracts.filter(function(row){return codes.has(row.customerCode) && (scope==='ALL' || !row.team || row.team===scope);});
+  const contractIds=new Set(snapshot.contracts.map(function(row){return row.id;}));
+  snapshot.budgets=snapshot.budgets.filter(function(row){return codes.has(row.customerCode) && (!row.contractId || contractIds.has(row.contractId)) && (scope==='ALL' || !row.team || row.team===scope);});
+  snapshot.transactions=snapshot.transactions.filter(function(row){return codes.has(row.customerCode) && (!row.contractId || contractIds.has(row.contractId)) && (scope==='ALL' || !row.team || row.team===scope);});
+  ['contracts','budgets','transactions'].forEach(function(key){snapshot[key].forEach(function(row){if(!row.team) row.team=snapshot.customers.find(function(c){return c.code===row.customerCode;}).team;});});
+  snapshot.transactions.forEach(function(row){row.status=row.status || 'ACTIVE';});
+  return {success:true,dataVersion:1,scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
+}

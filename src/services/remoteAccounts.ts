@@ -1,5 +1,6 @@
 import type { User } from '../types';
-export interface AccountResponse { success: boolean; message?: string; error?: string; user?: User; users?: User[]; token?: string; expiresAt?: string; }
+import type { BusinessSnapshot } from './businessData';
+export interface AccountResponse { success: boolean; message?: string; error?: string; user?: User; users?: User[]; token?: string; expiresAt?: string; dataVersion?:number; scope?:string; snapshot?:BusinessSnapshot; spreadsheetId?:string; }
 let memory: { endpoint: string; token: string; expiresAt: string } | null = null;
 function key(endpoint: string) { return 'mkt-sheet-session:' + endpoint; }
 export function remoteSession(endpoint: string) {

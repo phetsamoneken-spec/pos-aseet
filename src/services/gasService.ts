@@ -152,6 +152,7 @@ export class GasService {
     if (res.success === true && res.syncVersion !== 2) {
       return { success: false, message: 'The backend is still the old version. Deploy the unified Code.gs as a new Web App version, then sync again.' };
     }
+    if(res.success===true) storage.markBusinessSynced((scriptUrl || settings.appsScriptUrl).trim(),payload as unknown as import('./businessData').BusinessSnapshot);
     return {
       success: res.success === true,
       message: res.message || res.error || (res.success ? 'Synced successfully to Google Sheets!' : 'Sync failed.')

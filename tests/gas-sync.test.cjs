@@ -33,13 +33,13 @@ function backend(options = {}) {
     setFrozenRows() {}
     deleteRow(row) { this.rows.splice(row-1,1); }
   }
-  const ss = { getId: () => 'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
+  const ss = { getSpreadsheetTimeZone:()=> 'Asia/Bangkok', getId: () => 'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
   const context = vm.createContext({
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'INITIAL_ADMIN_PASSWORD' ? (options.adminPassword === undefined ? 'Test-only-password-42!' : options.adminPassword) : (options.property === undefined ? ss.getId() : options.property) }) },
     SpreadsheetApp: { openById: id => { assert.equal(id, ss.getId()); return ss; }, getActiveSpreadsheet: () => options.bound ? ss : null, flush() {} },
     LockService: { getScriptLock: () => ({ waitLock() { held = true; }, hasLock: () => held, releaseLock() { assert.ok(held); held = false; } }) },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: s => ({ setMimeType: () => JSON.parse(s) }) },
-    Utilities: {getUuid:()=>crypto.randomUUID(),DigestAlgorithm:{SHA_256:'sha256'},computeDigest:(_,s)=>[...crypto.createHash('sha256').update(s).digest()]},
+    Utilities: {formatDate:(value,zone,format)=>{assert.equal(zone,'Asia/Bangkok');return format==='yyyy-MM-dd'?value.toISOString().slice(0,10):value.toISOString()},getUuid:()=>crypto.randomUUID(),DigestAlgorithm:{SHA_256:'sha256'},computeDigest:(_,s)=>[...crypto.createHash('sha256').update(s).digest()]},
     CacheService: {getScriptCache:()=>({get:()=>null,put(){},remove(){}})},
     Logger: { log() {} }
   });
@@ -190,4 +190,54 @@ test('store deletion status syncs without removing financial history and survive
  assert.equal(b.post(p).success,true);
  assert.equal(customers.rows.length,2);
  assert.equal(customers.rows[1][statusColumn],'DELETED');
+});
+
+
+test('authenticated business reads filter all linked tables by the session team, ignoring caller roles',()=>{
+ const b=backend();b.context.initializeDatabase();
+ const p=payload();
+ p.budgets[0].customerCode='C1';
+ p.customers.push({code:'C2',name:'Team two',team:'B2',status:'DELETED'});
+ p.conditions.push({id:'COND2',customerCode:'C2',conditionQuantity:0});
+ p.contracts.push({id:'CT2',customerCode:'C2',cycleNumber:1});
+ p.budgets.push({id:'BD2',contractId:'CT2',customerCode:'C2',annualAmount:500,totalUsed:600,remainingAmount:-100});
+ p.transactions.push({id:'T2',customerCode:'C2',contractId:'CT2',amount:600,status:'ACTIVE'});
+ assert.equal(b.post(p).success,true);
+ const login=userRequest(b,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});
+ assert.equal(userRequest(b,'GET_BUSINESS_DATA').success,false);
+ const all=userRequest(b,'GET_BUSINESS_DATA',{},login.token);
+ assert.equal(all.success,true);assert.equal(all.dataVersion,1);assert.equal(all.scope,'ALL');
+ for(const key of ['customers','conditions','contracts','budgets','transactions'])assert.equal(all.snapshot[key].length,2,key);
+ assert.equal(all.snapshot.budgets[1].remainingAmount,-100);
+ assert.equal(all.snapshot.customers[1].status,'DELETED');
+ assert.equal(all.snapshot.users,undefined);assert.equal(all.snapshot.settings,undefined);
+ assert.ok(!JSON.stringify(all).includes('Password Hash'));
+ const created=userRequest(b,'ADD_USER',{username:'team-reader',password:'Team-reader-test!',fullName:'Reader',role:'TEAM_USER',team:'B1'},login.token);
+ assert.equal(created.success,true);
+ const team=userRequest(b,'AUTH_LOGIN',{username:'team-reader',password:'Team-reader-test!'});
+ const own=userRequest(b,'GET_BUSINESS_DATA',{team:'ALL',role:'ADMIN'},team.token);
+ assert.equal(own.success,true);assert.equal(own.scope,'B1');
+ for(const key of ['customers','conditions','contracts','budgets','transactions']){assert.equal(own.snapshot[key].length,1,key);assert.ok(!JSON.stringify(own.snapshot[key]).includes('C2'));}
+ // An ALL team value does not grant administrator reads.
+ const row=b.sheets.get('USERS').rows.find(row=>row[1]==='team-reader');row[6]='ALL';
+ assert.equal(userRequest(b,'GET_BUSINESS_DATA',{},team.token).success,false);
+});
+
+test('business reads use named columns, preserve dates/zero balances, and reject invalid schemas',()=>{
+ const b=backend();b.context.initializeDatabase();
+ const p=payload();p.customers[0].status='ACTIVE';p.conditions[0].conditionQuantity=0;
+ p.contracts[0].commencingOn='2026-01-02';assert.equal(b.post(p).success,true);
+ const login=userRequest(b,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});
+ const sheet=b.sheets.get('CUSTOMERS');
+ sheet.rows=sheet.rows.map(row=>[row[1],row[0],...row.slice(2)]);
+ const contracts=b.sheets.get('CONTRACTS');contracts.rows[1][4]=new Date('2026-01-02T00:00:00Z');
+ const result=userRequest(b,'GET_BUSINESS_DATA',{},login.token);
+ assert.equal(result.success,true);assert.equal(result.snapshot.customers[0].code,'C1');
+ assert.equal(result.snapshot.contracts[0].commencingOn,'2026-01-02');assert.equal(result.snapshot.conditions[0].conditionQuantity,0);
+ sheet.rows[0][1]='Unexpected ID';assert.equal(userRequest(b,'GET_BUSINESS_DATA',{},login.token).success,false);
+});
+
+test('legacy public customer GET does not bypass authenticated team-scoped reads',()=>{
+ const b=backend();assert.equal(b.context.doGet({parameter:{action:'getCustomers',team:'ALL'}}).success,false);
+ assert.equal(b.context.doGet({parameter:{action:'ping'}}).success,true);
 });
