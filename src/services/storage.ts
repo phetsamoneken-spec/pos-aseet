@@ -1,5 +1,5 @@
 import { accountRequest, clearRemoteSession, remoteSession, type AccountResponse } from './remoteAccounts';
-import { resolveBackendUrl } from '../config/backend';
+import { resolveBackendUrl, isRetiredBackend, DEPLOYED_BACKEND_URL } from '../config/backend';
 import { businessFingerprint, validateBusinessSnapshot, type BusinessSnapshot } from './businessData';
 /**
  * Local Data Storage and Business Logic Engine
@@ -93,7 +93,8 @@ class StorageService {
     const snapshot=this.businessSnapshot(), fingerprint=businessFingerprint(snapshot);
     try {
       const baseline=JSON.parse(safeGetItem('mkt_sheet_business_baseline_v1') || 'null');
-      if(baseline?.endpoint===this.settings.appsScriptUrl && baseline.fingerprint===fingerprint) return false;
+      const sameSheet=baseline?.endpoint===this.settings.appsScriptUrl || isRetiredBackend(baseline?.endpoint)&&this.settings.appsScriptUrl===DEPLOYED_BACKEND_URL;
+      if(sameSheet && baseline.fingerprint===fingerprint) return false;
     } catch {}
     if(Object.values(snapshot).every(rows=>rows.length===0))return false;
     return fingerprint!==businessFingerprint(generateSeedData());
@@ -1460,7 +1461,8 @@ class StorageService {
       if (!val) return defaultDate;
       if (typeof val === 'number') {
         // Excel serial date to JS date
-        const excelEpoch = new Date(1899, 11, 30);
+        // Excel serials are calendar dates, independent of the browser timezone.
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
         const jsDate = new Date(excelEpoch.getTime() + val * 86400000);
         if (!isNaN(jsDate.getTime())) {
           return jsDate.toISOString().slice(0, 10);

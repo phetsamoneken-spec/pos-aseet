@@ -5,6 +5,8 @@ import { INITIAL_SETTINGS } from '../src/data/seedData';
 assert.equal(resolveBackendUrl(undefined,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
 assert.equal(resolveBackendUrl('',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
 assert.equal(resolveBackendUrl('   ',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
+const retired='https://script.google.com/macros/s/AKfycbxt7FMAsx19pzuuMUB8xheP4aJtsZvjD_3W1qW5fjyZmvrgfIHCt7-TtC-QFwrCmiDu/exec';
+assert.equal(resolveBackendUrl(retired,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'existing devices migrate from the retired URL');
 const custom='https://script.google.com/macros/s/custom-deployment/exec';
 assert.equal(resolveBackendUrl(' '+custom+' ',DEPLOYED_BACKEND_URL),custom);
 
@@ -40,6 +42,8 @@ local.set('mkt_settings_v1',JSON.stringify({...storage.getSettings(),appsScriptU
 storage.init();
 assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL,'old blank endpoint must use deployment default');
 assert.equal(storage.getCurrentUser(),null,'cached user without backend session must sign in again');
+local.set('mkt_settings_v1',JSON.stringify({...storage.getSettings(),appsScriptUrl:retired}));storage.init();
+assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL);
 storage.updateSettings({appsScriptUrl:''});
 assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL);
 storage.updateSettings({appsScriptUrl:custom});storage.init();
