@@ -1,7 +1,7 @@
 import {businessWriteKey,newBusinessWriteId,type PendingBusinessWrite,type BusinessWriteKind,type BusinessWriteResult,type BusinessWriteState} from './businessWrites';
 import {businessToday, isCalendarDate, projectAnnualBudgets, selectAnnualBudget, refreshBudgetTotals} from './annualBudgets';
 import { accountRequest, clearRemoteSession, remoteSession, type AccountResponse } from './remoteAccounts';
-import { resolveBackendUrl, isRetiredBackend, DEPLOYED_BACKEND_URL } from '../config/backend';
+import { resolveBackendUrl, isRetiredBackend, DEPLOYED_BACKEND_URL, RETIRED_BACKENDS } from '../config/backend';
 import { businessFingerprint, validateBusinessSnapshot, type BusinessSnapshot } from './businessData';
 import {sharedSettings, sharedSettingKeys} from './sharedSettings';
 /**
@@ -95,6 +95,22 @@ class StorageService {
     const key=this.currentWriteKey();if(!key)return null;
     try{const pending=JSON.parse(safeGetItem(key)||'null');return pending?.actorId===this.currentUser?.id&&pending.endpoint===this.settings.appsScriptUrl?pending:null;}catch{return null;}
   }
+  private migratePendingBusinessWrite(confirmedSheetId:string,previousSheetId:string):boolean {
+    const actor=this.currentUser,endpoint=this.settings.appsScriptUrl;
+    if(!actor||this.getPendingBusinessWrite()||!confirmedSheetId)return false;
+    for(const oldEndpoint of RETIRED_BACKENDS){
+      const oldKey=businessWriteKey(actor.id,oldEndpoint);
+      let pending:PendingBusinessWrite;try{pending=JSON.parse(safeGetItem(oldKey)||'null');}catch{continue;}
+      if(!pending||pending.actorId!==actor.id||pending.endpoint!==oldEndpoint)continue;
+      const savedSheet=pending.spreadsheetId||previousSheetId;
+      if(!savedSheet||savedSheet==='YOUR_SPREADSHEET_ID'||savedSheet!==confirmedSheetId)continue;
+      const moved={...pending,endpoint,spreadsheetId:confirmedSheetId,previousEndpoint:oldEndpoint};
+      const key=businessWriteKey(actor.id,endpoint),text=JSON.stringify(moved);
+      try{window.localStorage.setItem(key,text);if(window.localStorage.getItem(key)!==text)return false;}catch{return false;}
+      safeSetItem(key,text);return true;
+    }
+    return false;
+  }
   public getBusinessWriteState():BusinessWriteState {
     const pending=Boolean(this.getPendingBusinessWrite()),feedback=this.writeFeedback?.key===this.currentWriteKey()?this.writeFeedback:null;
     return {status:feedback?.status||(pending?'error':'idle'),message:feedback?.message||(pending?'ມີການບັນທຶກທີ່ລໍສົ່ງໄປ Sheet (Pending Sheet save)':''),pending};
@@ -122,7 +138,7 @@ class StorageService {
     if(old){if(old.kind!==kind||JSON.stringify(old.data)!==JSON.stringify(data))return {success:false,message:'ກະລຸນາລອງສົ່ງລາຍການທີ່ຄ້າງກ່ອນ (Retry the pending Sheet save first).'};return this.retryPendingBusinessWrite();}
     this.ensureAnnualBudgets();
     if(this.hasUnsyncedBusinessData())return {success:false,message:'ມີການແກ້ໄຂເກົ່າໃນ browser ທີ່ຍັງບໍ່ Sync. ກະລຸນາສຳຮອງ ແລະໃຫ້ Admin ກວດກ່ອນ (Existing local edits need review before automatic saving).'};
-    const pending:PendingBusinessWrite={id:newBusinessWriteId(),kind,data:JSON.parse(JSON.stringify(data)),actorId:this.currentUser.id,endpoint:this.settings.appsScriptUrl,createdAt:new Date().toISOString()};
+    const pending:PendingBusinessWrite={id:newBusinessWriteId(),kind,data:JSON.parse(JSON.stringify(data)),actorId:this.currentUser.id,endpoint:this.settings.appsScriptUrl,createdAt:new Date().toISOString(),spreadsheetId:this.settings.spreadsheetId};
     // Persist the operation ID before sending; a lost response can be retried
     // after Reload without creating duplicate stores or expenses.
     const key=this.currentWriteKey(),serialized=JSON.stringify(pending);
@@ -143,7 +159,7 @@ class StorageService {
       if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed; the save receipt is retained for the original account.'};
       try{
         if(!result.success){
-          if(result.writeVersion===1&&result.retryable===false)safeRemoveItem(key);
+          if(result.writeVersion===1&&result.retryable===false){safeRemoveItem(key);if(pending.previousEndpoint)safeRemoveItem(businessWriteKey(actor.id,pending.previousEndpoint));}
           throw Error(result.message||'Sheet save failed');
         }
         if(result.writeVersion!==1||result.mutationId!==pending.id)throw Error('Update Code.gs and Deploy → New version to enable automatic Sheet saves.');
@@ -157,7 +173,7 @@ class StorageService {
         this.budgets=snapshot.budgets;this.transactions=snapshot.transactions;
         this.currentUser=user;safeSetItem(STORAGE_KEYS.AUTH,JSON.stringify(user));this.persistAll();this.recalculateContractStatuses();
         if(pending.kind==='REPRICE'){this.settings.pricePerCrate=Number(pending.data.price);safeSetItem(STORAGE_KEYS.SETTINGS,JSON.stringify(this.settings));}
-        safeRemoveItem(key);if(wasClean)this.markBusinessSynced(endpoint,this.businessSnapshot(),result.businessRevision);
+        safeRemoveItem(key);if(pending.previousEndpoint)safeRemoveItem(businessWriteKey(actor.id,pending.previousEndpoint));if(wasClean)this.markBusinessSynced(endpoint,this.businessSnapshot(),result.businessRevision);
         this.writeFeedback={key,status:'saved',message:'ບັນທຶກໄປ Google Sheet ສຳເລັດ (Saved to Google Sheet)'};this.notify();
         return {success:true,message:result.message||'Saved to Google Sheet',entityId:result.entityId};
       }catch(error){const message=error instanceof Error?error.message:String(error);this.writeFeedback={key,status:'error',message};this.notify();return {success:false,message};}
@@ -255,12 +271,16 @@ class StorageService {
       const data=validateBusinessSnapshot(result.snapshot,scope);
       if(before!==businessFingerprint(this.businessSnapshot()))return publish('local','ມີການແກ້ຂໍ້ມູນຂະນະກຳລັງໂຫຼດ. ແອັບເກັບການແກ້ໄຂໄວ້; ກະລຸນາ Sync ຫຼືສຳຮອງກ່ອນ.');
       this.customers=data.customers;this.conditions=data.conditions;this.contracts=data.contracts;this.budgets=data.budgets;this.transactions=data.transactions;
+      const previousSheetId=this.settings.spreadsheetId;
       if(result.spreadsheetId)this.settings.spreadsheetId=result.spreadsheetId;
       this.markBusinessSynced(endpoint,this.businessSnapshot(),result.businessRevision);
       this.persistAll();
       this.recalculateContractStatuses();
       this.logAction('LOAD_FROM_SHEETS',`Loaded ${data.customers.length} customers from Sheet, scope ${scope}.`);
-      return publish('loaded',`ໂຫຼດຈາກ Sheet ສຳເລັດ: ${data.customers.filter(customer=>customer.status!=='DELETED').length} ຮ້ານ (${scope}).`,true);
+      const migrated=typeof result.businessRevision==='string'&&this.migratePendingBusinessWrite(result.spreadsheetId||'',previousSheetId);
+      const loaded=publish('loaded',`ໂຫຼດຈາກ Sheet ສຳເລັດ: ${data.customers.filter(customer=>customer.status!=='DELETED').length} ຮ້ານ (${scope}).`,true);
+      if(migrated)await this.retryPendingBusinessWrite();
+      return loaded;
     } catch(error){return publish('error',error instanceof Error?error.message:String(error));}
   }
 

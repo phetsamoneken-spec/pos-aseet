@@ -2,7 +2,7 @@
 
 Existing MKT Budget React/Vite application, including five dashboard themes, customers, contract cycles, budgets, transactions, reports, user management, and Google Apps Script integration.
 
-Source version: **2026.11.01.13**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. Browser-specific backend overrides cannot change the production data source. Local development retains the separate demo mode. Admin chooses the theme in Settings and publishes it with the shared configuration. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. Business-data loading requires installing this release’s updated Code.gs.
+Source version: **2026.11.01.14**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. Browser-specific backend overrides cannot change the production data source. Local development retains the separate demo mode. Admin chooses the theme in Settings and publishes it with the shared configuration. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. Business-data loading requires installing this release’s updated Code.gs.
 
 ## Run locally
 
@@ -26,6 +26,7 @@ node --import tsx tests/deployment-backend.test.ts
 node --import tsx tests/sheet-business-read.test.ts
 node --import tsx tests/admin-policy.test.ts
 node --import tsx tests/business-writes.test.ts
+node --import tsx tests/deployment-write-migration.test.ts
 TZ=Asia/Bangkok node --import tsx tests/annual-budgets.test.ts
 TZ=America/Los_Angeles node --import tsx tests/annual-budgets.test.ts
 TZ=Asia/Bangkok node --import tsx tests/excel-calendar-date.test.ts
@@ -87,3 +88,5 @@ Production uses the owner-supplied November 1 replacement deployment in `src/con
 ## Automatic Sheet writes
 
 Normal store, expense, cancellation, contract and budget forms now submit authenticated incremental writes and wait for Sheet acknowledgement. Admin can manage all teams; Team users can add/delete their own stores and record/cancel their own team expenses. Store deletions persist as DELETED and retain financial history. Lost responses and partial writes can be retried without duplicates. Full Excel publication rejects stale Sheet revisions. See [installation, recovery and existing-cache behavior](gas/AUTO-SAVE.md). Install this release’s Code.gs and deploy a new version of the existing Web App; normal edits then need no separate Admin Sync.
+
+The latest replacement deployment is pinned for every device. Existing sessions require a new login. Pending automatic saves from a retired endpoint retain their operation IDs and migrate only after an authenticated read confirms the same spreadsheet and account; the original receipt is retained until acknowledgement.
