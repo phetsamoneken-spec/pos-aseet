@@ -283,10 +283,11 @@ class StorageService {
       this.sheetDataState={status:'idle',message:'ບັນທຶກການແກ້ໄຂໄປ Sheet ແລ້ວ. ສາມາດໂຫຼດຂໍ້ມູນລ່າສຸດໄດ້.'};this.notify();
     }
   }
-  public async loadBusinessFromSheets(replaceLocal=false): Promise<{success:boolean;message:string}> {
+  public async loadBusinessFromSheets(replaceLocal=false,background=false): Promise<{success:boolean;message:string}> {
     const endpoint=this.settings.appsScriptUrl, actor=this.currentUser;
     const token=remoteSession(endpoint)?.token;
     if(!actor || !token)return {success:false,message:'Sign in to Sheets first.'};
+    if(this.bulkPublishing)return {success:false,message:'Wait for the Excel/Sheet publication to finish.'};
     this.ensureAnnualBudgets();
     if(this.recoveryFlight)return this.recoveryFlight;
     if(this.businessWriteFlight||this.getPendingBusinessWrite()&&!(replaceLocal&&this.hasUnsyncedBusinessData()))return {success:false,message:'Finish the pending Sheet save before loading data.'};
@@ -320,7 +321,7 @@ class StorageService {
       this.markBusinessSynced(endpoint,this.businessSnapshot(),result.businessRevision);
       this.persistAll();
       this.recalculateContractStatuses();
-      this.logAction('LOAD_FROM_SHEETS',`Loaded ${data.customers.length} customers from Sheet, scope ${scope}.`);
+      if(!background)this.logAction('LOAD_FROM_SHEETS',`Loaded ${data.customers.length} customers from Sheet, scope ${scope}.`);
       const migrated=typeof result.businessRevision==='string'&&this.migratePendingBusinessWrite(result.spreadsheetId||'',previousSheetId,result.migratedFromSpreadsheetId||'');
       const loaded=publish('loaded',`ໂຫຼດຈາກ Sheet ສຳເລັດ: ${data.customers.filter(customer=>customer.status!=='DELETED').length} ຮ້ານ (${scope}).`,true);
       if(migrated)await this.retryPendingBusinessWrite();

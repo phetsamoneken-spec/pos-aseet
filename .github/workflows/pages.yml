@@ -39,6 +39,7 @@ jobs:
           node --import tsx tests/customer-delete.test.ts
           node --import tsx tests/deployment-backend.test.ts
           node --import tsx tests/sheet-business-read.test.ts
+          node --import tsx tests/sheet-auto-refresh.test.ts
           node --import tsx tests/admin-policy.test.ts
           node --import tsx tests/business-writes.test.ts
           node --import tsx tests/legacy-recovery.test.ts

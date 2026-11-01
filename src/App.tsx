@@ -9,6 +9,7 @@
 import React, { useState, useEffect } from 'react';
 import { useDashboardTheme } from './components/ThemeSwitcher';
 import { storage } from './services/storage';
+import { startSheetAutoRefresh } from './services/sheetAutoRefresh';
 import { translations, Language } from './locales/translations';
 import { Team, User } from './types';
 
@@ -47,20 +48,18 @@ export default function App() {
   useEffect(()=>{if(sharedTheme)setTheme(sharedTheme);},[currentUser?.id,sharedTheme]);
   useEffect(()=>{if(currentUser?.role!=='ADMIN'&&['settings','users'].includes(currentView))setCurrentView('dashboard');},[currentUser?.role,currentView]);
   useEffect(()=>{
-    let lastRead=0;
     const refresh=async()=>{
       storage.refreshBudgetCalendar();
-      if(document.visibilityState==='hidden'||Date.now()-lastRead<5000)return;
       if(currentUser && backendUrl && storage.hasRemoteUserSession()){
-        lastRead=Date.now();
+        if(storage.getSheetDataState().status==='loading'||storage.getBusinessWriteState().status==='saving')return;
         if(storage.getPendingBusinessWrite()){const saved=await storage.retryPendingBusinessWrite();if(!saved.success)return;}
         if(storage.hasUnsyncedBusinessData()){const common=await storage.refreshSharedSettings();if(!common.success)return;}
-        await storage.loadBusinessFromSheets();
+        await storage.loadBusinessFromSheets(false,true);
       }
     };
     const calendarTimer=window.setInterval(()=>storage.refreshBudgetCalendar(),30000);
-    refresh();window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);window.addEventListener('online',refresh);
-    return ()=>{window.clearInterval(calendarTimer);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);window.removeEventListener('online',refresh);};
+    const stopRefresh=currentUser&&backendUrl?startSheetAutoRefresh(refresh):()=>{};
+    return ()=>{window.clearInterval(calendarTimer);stopRefresh();};
   },[currentUser?.id,backendUrl]);
 
   // Modal States
