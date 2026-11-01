@@ -13,14 +13,12 @@ export const LoginView: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [backendUrl, setBackendUrl] = useState(settings.appsScriptUrl);
   const [signingIn, setSigningIn] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSigningIn(true);
-    if (backendUrl.trim() !== settings.appsScriptUrl) storage.updateSettings({appsScriptUrl:backendUrl.trim()});
     const res = await storage.login(username, password);
     setSigningIn(false);
     if (!res.success) {
@@ -64,9 +62,6 @@ export const LoginView: React.FC = () => {
           )}
 
           <form onSubmit={handleLogin} className="space-y-5">
-            <label className="block text-xs text-slate-300">Google Apps Script URL (/exec)
-              <input type="url" value={backendUrl} onChange={e=>setBackendUrl(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec" className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-800 p-2 text-white" />
-            </label>
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 {lang === 'lo' ? 'ຊື່ຜູ້ໃຊ້ງານ (USERNAME)' : 'Username'}
@@ -128,9 +123,6 @@ export const LoginView: React.FC = () => {
           </form>
         </div>
 
-        <div className="mt-6 text-center text-xs text-slate-500">
-          Google Spreadsheet ID: <code className="text-slate-400 font-mono">YOUR_SPREADSHEET_ID</code>
-        </div>
       </div>
     </div>
   );
