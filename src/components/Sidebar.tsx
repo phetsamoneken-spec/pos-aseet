@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { APP_VERSION } from '../services/appUpdates';
 import {
   LayoutDashboard,
@@ -20,16 +20,16 @@ import { translations, Language } from '../locales/translations';
 interface SidebarProps {
   currentView: string;
   onSelectView: (view: string) => void;
-  mobileMenuOpen: boolean;
-  setMobileMenuOpen: (open: boolean) => void;
+  navigationOpen: boolean;
+  setNavigationOpen: (open: boolean) => void;
   onOpenGasDocs: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
   onSelectView,
-  mobileMenuOpen,
-  setMobileMenuOpen,
+  navigationOpen,
+  setNavigationOpen,
   onOpenGasDocs
 }) => {
   const currentUser = storage.getCurrentUser();
@@ -37,6 +37,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const lang: Language = settings.language;
   const t = translations[lang];
   const isAdmin = currentUser?.role === 'ADMIN';
+  const drawerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!navigationOpen) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    drawerRef.current?.querySelector('button')?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setNavigationOpen(false);
+      }
+      if (event.key !== 'Tab') return;
+      const buttons = drawerRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+      if (!buttons?.length) return;
+      const first = buttons[0], last = buttons[buttons.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !drawerRef.current?.contains(document.activeElement))) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !drawerRef.current?.contains(document.activeElement))) {
+        event.preventDefault(); first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [navigationOpen, setNavigationOpen]);
 
   const navItems = [
     {
@@ -92,28 +122,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleSelect = (id: string) => {
     onSelectView(id);
-    if (mobileMenuOpen) setMobileMenuOpen(false);
+    if (navigationOpen) setNavigationOpen(false);
   };
 
   return (
     <>
-      {/* Mobile Backdrop */}
-      {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm lg:hidden transition-opacity"
-          onClick={() => setMobileMenuOpen(false)}
+      {/* Close the navigation when clicking outside it on any screen size. */}
+      {navigationOpen && (
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Close navigation backdrop"
+          className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm transition-opacity"
+          onClick={() => setNavigationOpen(false)}
         />
       )}
 
       {/* Sidebar container */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-800 text-slate-300 transform transition-transform duration-200 ease-in-out lg:sticky lg:top-16 lg:h-[calc(100vh-4rem)] lg:translate-x-0 ${
-          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
-        } flex flex-col justify-between shadow-2xl lg:shadow-none`}
+        ref={drawerRef}
+        id="main-navigation"
+        role="dialog"
+        aria-label="Main navigation"
+        aria-modal={navigationOpen ? true : undefined}
+        aria-hidden={!navigationOpen}
+        inert={!navigationOpen}
+        className={`fixed inset-y-0 left-0 z-50 w-64 max-w-[85vw] h-dvh bg-slate-900 border-r border-slate-800 text-slate-300 transform transition-transform duration-200 motion-reduce:transition-none ease-in-out ${
+          navigationOpen ? 'translate-x-0' : '-translate-x-full'
+        } flex flex-col justify-between shadow-2xl`}
       >
         <div className="p-4 space-y-4 overflow-y-auto flex-1">
-          {/* Header on mobile inside drawer with Close button */}
-          <div className="flex items-center justify-between px-2 pb-3 border-b border-slate-800 lg:hidden">
+          {/* Drawer header and close button */}
+          <div className="flex items-center justify-between px-2 pb-3 border-b border-slate-800">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white text-xs shadow-sm">
                 MKT
@@ -124,7 +164,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </div>
             <button
-              onClick={() => setMobileMenuOpen(false)}
+              onClick={() => setNavigationOpen(false)}
               className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer transition"
               aria-label="Close menu"
             >
@@ -184,7 +224,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={() => {
                   onOpenGasDocs();
-                  if (mobileMenuOpen) setMobileMenuOpen(false);
+                  if (navigationOpen) setNavigationOpen(false);
                 }}
                 className="mt-3 w-full py-1.5 px-3 text-[11px] font-semibold text-white bg-blue-600/90 hover:bg-blue-600 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
               >

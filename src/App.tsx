@@ -39,7 +39,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(storage.getCurrentUser());
   const [currentView, setCurrentView] = useState<string>('dashboard');
   const [selectedTeam, setSelectedTeam] = useState<Team | 'ALL'>('ALL');
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const { theme, setTheme } = useDashboardTheme(currentUser?.username || 'guest');
 
   // Modal States
@@ -104,8 +104,8 @@ export default function App() {
         onSelectView={setCurrentView}
         selectedTeam={selectedTeam}
         onSelectTeam={setSelectedTeam}
-        mobileMenuOpen={mobileMenuOpen}
-        setMobileMenuOpen={setMobileMenuOpen}
+        navigationOpen={navigationOpen}
+        setNavigationOpen={setNavigationOpen}
         onOpenGasDocs={() => setShowGasDocsModal(true)}
       />
 
@@ -115,8 +115,8 @@ export default function App() {
         <Sidebar
           currentView={currentView}
           onSelectView={setCurrentView}
-          mobileMenuOpen={mobileMenuOpen}
-          setMobileMenuOpen={setMobileMenuOpen}
+          navigationOpen={navigationOpen}
+          setNavigationOpen={setNavigationOpen}
           onOpenGasDocs={() => setShowGasDocsModal(true)}
         />
 

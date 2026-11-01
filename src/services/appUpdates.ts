@@ -1,4 +1,4 @@
-export const APP_VERSION = '2026.11.01.2';
+export const APP_VERSION = '2026.11.01.3';
 
 let registration: ServiceWorkerRegistration | undefined;
 let updateReady = false;

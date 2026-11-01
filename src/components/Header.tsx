@@ -21,16 +21,16 @@ interface HeaderProps {
   onSelectView: (view: string) => void;
   selectedTeam: Team | 'ALL';
   onSelectTeam: (team: Team | 'ALL') => void;
-  mobileMenuOpen: boolean;
-  setMobileMenuOpen: (open: boolean) => void;
+  navigationOpen: boolean;
+  setNavigationOpen: (open: boolean) => void;
   onOpenGasDocs: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   selectedTeam,
   onSelectTeam,
-  mobileMenuOpen,
-  setMobileMenuOpen,
+  navigationOpen,
+  setNavigationOpen,
   onOpenGasDocs
 }) => {
   const currentUser = storage.getCurrentUser();
@@ -53,14 +53,17 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="w-full px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           
-          {/* Left: Mobile hamburger & Logo */}
+          {/* Navigation toggle and logo */}
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="lg:hidden p-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer"
+              onClick={() => setNavigationOpen(!navigationOpen)}
+              type="button"
+              className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer"
               aria-label="Toggle navigation"
+              aria-expanded={navigationOpen}
+              aria-controls="main-navigation"
             >
-              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+              {navigationOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
             </button>
 
             <div className="flex items-center gap-2.5">
