@@ -126,6 +126,7 @@ test('full Sheet URL in Script Properties extracts the ID; invalid config is rej
 });
 
 function userRequest(b, action, payload={}, authToken) {
+ if(action==='SYNC_BULK_DATA'&&authToken&&payload.expectedBusinessRevision===undefined){try{payload={...payload,expectedBusinessRevision:b.context.readBusinessData_(authToken).businessRevision};}catch{}}
  return b.context.doPost({postData:{contents:JSON.stringify({action,payload,authToken})}});
 }
 function signedInBackend() {
@@ -315,4 +316,59 @@ test('annual budgets persist by contract anniversary and authenticated transacti
  assert.equal(userRequest(b,'ADD_TRANSACTION',retryEntry,team.token).success,true,'retry acknowledges the same transaction even after the budget is exhausted');
  data=read();assert.equal(data.transactions.filter(t=>t.id===retried.id).length,1);assert.equal(data.budgets.find(b=>b.id==='B1-Y2').totalUsed,1000,'partial writes and retries do not duplicate spending');
  assert.equal(userRequest(b,'SYNC_BULK_DATA',{...data},login.token).success,true);assert.equal(b.sheets.get('BUDGETS').rows.length,4);assert.equal(read().budgets.find(b=>b.id==='B1-Y2').totalUsed,1000);
+});
+
+const incremental=(b,token,id,kind,data)=>userRequest(b,'MUTATE_BUSINESS',{id:'OP-'+id,kind,data},token);
+const newStore=(code,team='B1')=>({code,name:'Store '+code,team,conditionQty:2,conditionUOM:'CAS',conditionProductDescription:'Product',commencingOn:'2026-01-01',expiringOn:'2028-12-31',annualBudget:200,phone:'=1+1'});
+test('incremental store and expense writes reach the shared Sheet, enforce teams and retain deleted-store history',()=>{
+ const {b,login}=signedInBackend();userRequest(b,'SAVE_SHARED_SETTINGS',{settings:{pricePerCrate:100}},login.token);
+ userRequest(b,'ADD_USER',{username:'writer',fullName:'Writer',role:'TEAM_USER',team:'B1',password:'Writer-test-42!'},login.token);
+ const team=userRequest(b,'AUTH_LOGIN',{username:'writer',password:'Writer-test-42!'});
+ assert.equal(incremental(b,undefined,'unauthorized-0001','ADD_CUSTOMER',newStore('C1')).success,false);
+ assert.equal(incremental(b,team.token,'cross-team-00001','ADD_CUSTOMER',newStore('CROSS','B2')).success,false);
+ const added=incremental(b,team.token,'create-store-001','ADD_CUSTOMER',{...newStore('C1'),annualBudget:999999});assert.equal(added.success,true);assert.equal(added.writeVersion,1);assert.equal(added.patch.budgets[0].annualAmount,200,'Team cannot forge the Admin price');
+ assert.equal(incremental(b,login.token,'create-store-002','ADD_CUSTOMER',newStore('C2','B2')).success,true);
+ assert.equal(b.sheets.get('CUSTOMERS').rows.length,3);assert.equal(b.sheets.get('CUSTOMERS').rows[1][4],"'=1+1");
+ assert.equal(incremental(b,team.token,'wrong-delete-001','DELETE_CUSTOMER',{customerCode:'C2',role:'ADMIN'}).success,false);
+ const entry={customerCode:'C1',date:'2026-11-01',category:'Other',description:'Shared expense',amount:75};
+ const expense=incremental(b,team.token,'expense-write-01','ADD_TRANSACTION',entry);assert.equal(expense.success,true);
+ assert.equal(incremental(b,team.token,'expense-write-01','ADD_TRANSACTION',entry).entityId,expense.entityId,'lost-response retry has the same receipt');
+ assert.equal(incremental(b,team.token,'expense-write-01','ADD_TRANSACTION',{...entry,amount:80}).success,false,'an operation ID cannot be reused with different data');
+ assert.equal(incremental(b,login.token,'expense-write-02','ADD_TRANSACTION',{...entry,amount:30}).success,true);
+ const read=()=>userRequest(b,'GET_BUSINESS_DATA',{},login.token).snapshot;
+ assert.equal(read().budgets.find(x=>x.customerCode==='C1'&&x.periodNumber===1).totalUsed,105,'two browsers add to the authoritative balance');
+ assert.equal(read().transactions.length,2);
+ assert.equal(incremental(b,team.token,'forged-budget-01','UPDATE_BUDGET',{budgetId:added.patch.budgets[0].id,newAmount:9999}).success,false);
+ assert.equal(incremental(b,team.token,'cancel-expense-1','CANCEL_TRANSACTION',{txnId:expense.entityId,reason:'Correction'}).success,true);
+ assert.equal(read().budgets.find(x=>x.customerCode==='C1'&&x.periodNumber===1).totalUsed,30);
+ const deleted=incremental(b,team.token,'delete-store-001','DELETE_CUSTOMER',{customerCode:'C1'});assert.equal(deleted.success,true);assert.equal(deleted.patch.customers[0].status,'DELETED');
+ assert.equal(b.sheets.get('CUSTOMERS').rows.find(row=>row[0]==='C1')[7],'DELETED');assert.equal(read().transactions.length,2);assert.equal(read().contracts.length,2);
+ assert.equal(incremental(b,team.token,'expense-deleted1','ADD_TRANSACTION',entry).success,false);
+ const independent=userRequest(b,'AUTH_LOGIN',{username:'writer',password:'Writer-test-42!'});const own=userRequest(b,'GET_BUSINESS_DATA',{},independent.token);assert.deepEqual(JSON.parse(JSON.stringify(own.snapshot.customers.map(c=>[c.code,c.status]))),[['C1','DELETED']]);
+ assert.equal(incremental(b,team.token,'delete-all-team1','DELETE_ALL_CUSTOMERS',{}).success,false);
+ assert.equal(incremental(b,login.token,'delete-all-admin','DELETE_ALL_CUSTOMERS',{}).success,true);assert.equal(read().customers.every(c=>c.status==='DELETED'),true);assert.equal(read().transactions.length,2);
+});
+
+test('journal recovery finishes partial writes once and stale full snapshots cannot overwrite another browser',()=>{
+ const {b,login}=signedInBackend();assert.equal(incremental(b,login.token,'create-recovery1','ADD_CUSTOMER',newStore('R1')).success,true);
+ const before=userRequest(b,'GET_BUSINESS_DATA',{},login.token);
+ const entry={customerCode:'R1',date:'2026-11-01',category:'Other',description:'Retry safely',amount:70};
+ b.failWrites.add('BUDGET_TRANSACTIONS');assert.equal(incremental(b,login.token,'partial-expense1','ADD_TRANSACTION',entry).success,false);
+ b.failWrites.clear();const recovered=userRequest(b,'GET_BUSINESS_DATA',{},login.token);assert.equal(recovered.success,true);assert.equal(recovered.snapshot.transactions.length,1);assert.equal(recovered.snapshot.budgets[0].totalUsed,70);
+ assert.equal(incremental(b,login.token,'partial-expense1','ADD_TRANSACTION',entry).success,true);assert.equal(userRequest(b,'GET_BUSINESS_DATA',{},login.token).snapshot.transactions.length,1);
+ const stale=userRequest(b,'SYNC_BULK_DATA',{...before.snapshot,expectedBusinessRevision:before.businessRevision},login.token);assert.equal(stale.success,false);assert.match(stale.message,/another device/);assert.equal(userRequest(b,'GET_BUSINESS_DATA',{},login.token).snapshot.budgets[0].totalUsed,70);
+ assert.equal(incremental(b,login.token,'after-recovery01','ADD_TRANSACTION',{...entry,amount:20}).success,true);assert.equal(userRequest(b,'GET_BUSINESS_DATA',{},login.token).snapshot.budgets[0].totalUsed,90);
+ const invalid=incremental(b,login.token,'validation-00001','NEW_CONTRACT',{customerCode:'R1',commencingOn:'2026-02-01',expiringOn:'2027-02-01',annualBudget:200});assert.equal(invalid.success,false);assert.equal(invalid.retryable,false);
+ assert.equal(incremental(b,login.token,'future-contract1','NEW_CONTRACT',{customerCode:'R1',commencingOn:'2029-01-01',expiringOn:'2030-12-31',annualBudget:500}).success,true);
+ const all=userRequest(b,'GET_BUSINESS_DATA',{},login.token);assert.equal(all.snapshot.contracts.length,2);assert.equal(all.snapshot.transactions.length,2);
+ assert.equal(b.sheets.get('APP_WRITES').rows.slice(1).every(row=>row[4]==='DONE'),true);
+});
+
+test('large journal plans split into valid Unicode chunks and replay without losing historical receipts',()=>{
+ const {b,login}=signedInBackend();const added=incremental(b,login.token,'large-plan-store','ADD_CUSTOMER',newStore('LARGE'));assert.equal(added.success,true);
+ const contract=added.patch.contracts[0],budget=added.patch.budgets[0];
+ const history=Array.from({length:30},(_,i)=>({id:'HISTORY-'+i,customerCode:'LARGE',customerName:'Large',team:'B1',contractId:contract.id,budgetId:budget.id,date:'2026-11-01',amount:1,category:'Other',description:'😀'.repeat(1000),createdBy:'admin',createdAt:'2026-11-01',status:'ACTIVE'}));assert.equal(b.post({transactions:history}).success,true);
+ const saved=incremental(b,login.token,'large-plan-write','ADD_TRANSACTION',{customerCode:'LARGE',date:'2026-11-01',category:'Other',description:'Additional receipt',amount:2});assert.equal(saved.success,true);assert.equal(saved.snapshot.transactions.length,31);assert.equal(saved.snapshot.budgets[0].totalUsed,32);
+ const parts=b.sheets.get('APP_WRITES').rows.filter(row=>row[0]==='OP-large-plan-write');assert.ok(parts.length>1);assert.equal(parts.every(row=>row[7].length<=28000&&!(row[7].charCodeAt(row[7].length-1)>=0xD800&&row[7].charCodeAt(row[7].length-1)<=0xDBFF)),true);
+ assert.equal(incremental(b,login.token,'large-plan-write','ADD_TRANSACTION',{customerCode:'LARGE',date:'2026-11-01',category:'Other',description:'Additional receipt',amount:2}).snapshot.transactions.length,31);
 });

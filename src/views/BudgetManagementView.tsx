@@ -72,14 +72,13 @@ export const BudgetManagementView: React.FC<BudgetManagementViewProps> = ({
     return item.budget?.status === budgetStatusFilter;
   });
 
-  const handleSaveBudgetAdjustment = (e: React.FormEvent) => {
+  const [isSaving,setIsSaving]=useState(false);
+  const handleSaveBudgetAdjustment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingBudget) return;
-    const res = storage.updateBudget(
-      editingBudget.budgetId,
-      editingBudget.newAmount,
-      editingBudget.notes
-    );
+    if (!editingBudget||isSaving) return;
+    setIsSaving(true);
+    const res = await storage.commitBusinessChange('UPDATE_BUDGET',{budgetId:editingBudget.budgetId,newAmount:editingBudget.newAmount,notes:editingBudget.notes});
+    setIsSaving(false);
     if (res.success) {
       setEditingBudget(null);
     } else {
@@ -441,6 +440,7 @@ export const BudgetManagementView: React.FC<BudgetManagementViewProps> = ({
                 </button>
                 <button
                   type="submit"
+                  disabled={isSaving}
                   className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white shadow-md shadow-blue-600/30"
                 >
                   {t.save}

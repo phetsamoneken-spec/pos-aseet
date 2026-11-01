@@ -293,14 +293,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
                   type="button"
                   disabled={syncingSheets||savingShared}
                   onClick={async () => {
-                    if(!formRef.current?.reportValidity()||!saveCurrentSettings())return;
-                    const price = formData.pricePerCrate || 240000;
-                    const res = storage.recalculateBudgetsByPricePerCrate(price);
-                    if(!res.success)return;
-                    if(storage.getSettings().appsScriptUrl){
-                      setSyncingSheets(true);
-                      try{const published=await GasService.syncAllToGoogleSheets();setSyncResult(published);setSaveSuccess(published.success);}finally{setSyncingSheets(false);}
-                    }else setSaveSuccess(true);
+                    if(!formRef.current?.reportValidity())return;
+                    setSyncingSheets(true);
+                    try{const published=await storage.commitBusinessChange('REPRICE',{price:formData.pricePerCrate||240000,recalculate:true});setSyncResult(published);setSaveSuccess(published.success);}finally{setSyncingSheets(false);}
                   }}
                   className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
                 >

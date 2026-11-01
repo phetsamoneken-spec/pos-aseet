@@ -1,3 +1,5 @@
+> Version 2026.11.01.13: normal add/delete/expense/budget forms save automatically through MUTATE_BUSINESS. Full Excel publication uses a server revision check. See [AUTO-SAVE.md](AUTO-SAVE.md).
+
 > Admin-only import and shared settings: see [ADMIN-POLICY.md](ADMIN-POLICY.md). This release requires deploying the updated Code.gs.
 
 # ໂຫຼດຂໍ້ມູນລູກຄ້າຈາກ Sheet ໃນເຄື່ອງອື່ນ — 2026.11.01.8
@@ -12,7 +14,7 @@
 ## ຂໍ້ມູນທີ່ຍັງຢູ່ເຄື່ອງເກົ່າ
 
 - ຖ້າຂໍ້ມູນຢູ່ໃນ Sheet ແລ້ວ ບໍ່ຕ້ອງ upload ຊ້ຳເພື່ອໂຫຼດໃນເຄື່ອງໃໝ່.
-- ການເພີ່ມ/ລົບຮ້ານ ແລະບັນທຶກລາຍຈ່າຍຍັງເກັບໃນ browser ກ່ອນ. ໃຫ້ Admin ກົດ Sync to Google Sheets ຈາກ browser ທີ່ມີການແກ້ໄຂ. ຈາກນັ້ນເຄື່ອງອື່ນກົດໂຫຼດຈາກ Sheet.
+- ປຸ່ມເພີ່ມ/ລົບຮ້ານ ແລະບັນທຶກລາຍຈ່າຍສົ່ງໄປ Sheet ອັດຕະໂນມັດ. ເຄື່ອງອື່ນຮັບຂໍ້ມູນລ່າສຸດເມື່ອໂຫຼດຈາກ Sheet; ເບິ່ງ AUTO-SAVE.md.
 - ຖ້າແອັບພົບການແກ້ໄຂທີ່ຍັງບໍ່ Sync ມັນຈະບໍ່ໂຫຼດຂໍ້ມູນໃໝ່ມາທັບອັດຕະໂນມັດ. ໃຫ້ Sync ກ່ອນ ຫຼືກົດໂຫຼດແບບຢືນຢັນ; ແອັບຈະດາວໂຫຼດ JSON ສຳຮອງຂໍ້ມູນເດີມກ່ອນແທນທີ່.
 - ບໍ່ແມ່ນການ upload ທຸກການແກ້ໄຂແບບທັນທີ ຫຼືລະບົບແກ້ຂໍ້ຂັດແຍ່ງລະຫວ່າງຫຼາຍເຄື່ອງ. ຄວນ upload ແລະໂຫຼດຂໍ້ມູນລ່າສຸດກ່ອນເລີ່ມຮອບການແກ້ໄຂ.
 

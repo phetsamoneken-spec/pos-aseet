@@ -11,6 +11,7 @@ export interface GasResponse<T = unknown> {
   success: boolean;
   syncVersion?: number;
   annualBudgetVersion?: number;
+  businessRevision?:string;
   message?: string;
   data?: T;
   error?: string;
@@ -157,12 +158,14 @@ export class GasService {
       return { success: false, message: error instanceof Error ? error.message : String(error) };
     }
 
-    const res = await this.sendToGas('SYNC_BULK_DATA', payload, scriptUrl);
+    try{storage.beginBulkPublish();}catch(error){return {success:false,message:error instanceof Error?error.message:String(error)};}
+    let res:GasResponse;
+    try{res=await this.sendToGas('SYNC_BULK_DATA',payload,scriptUrl);}finally{storage.endBulkPublish();}
     if (res.success === true && (res.syncVersion !== 2 || res.annualBudgetVersion !== 1)) {
       return { success: false, message: 'The backend is still the old version. Deploy the unified Code.gs as a new Web App version, then sync again.' };
     }
     if(res.success===true){
-      storage.markBusinessSynced((scriptUrl || settings.appsScriptUrl).trim(),payload as unknown as import('./businessData').BusinessSnapshot);
+      storage.markBusinessSynced((scriptUrl || settings.appsScriptUrl).trim(),payload as unknown as import('./businessData').BusinessSnapshot,res.businessRevision);
       storage.markSharedSettingsPublished(payload.settings);
     }
     return {

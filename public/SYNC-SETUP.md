@@ -1,3 +1,5 @@
+> Version 2026.11.01.13: normal add/delete/expense/budget forms save automatically through MUTATE_BUSINESS. Full Excel publication uses a server revision check. See [AUTO-SAVE.md](AUTO-SAVE.md).
+
 > Admin-only import and shared settings: see [ADMIN-POLICY.md](ADMIN-POLICY.md). This release requires deploying the updated Code.gs.
 
 # Sheet → browser reads: see [READ-FROM-SHEETS.md](READ-FROM-SHEETS.md). The sections below describe the separate manual upload action.

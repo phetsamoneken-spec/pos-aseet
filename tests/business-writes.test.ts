@@ -1,0 +1,64 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import vm from 'node:vm';
+// Use the same in-memory Sheets/Apps Script harness as the backend suite. This
+// executes the real doPost, authentication, journal and row writes, not a success stub.
+const harness=readFileSync('tests/gas-sync.test.cjs','utf8').split("test('single file")[0];
+const backend=vm.runInNewContext(harness+'\nbackend;',{require:createRequire(import.meta.url)});
+const server=backend();server.context.initializeDatabase();
+const values=new Map<string,string>(),sessions=new Map<string,string>();
+const ls={getItem:(k:string)=>values.get(k)??null,setItem:(k:string,v:string)=>{values.set(k,v)},removeItem:(k:string)=>{values.delete(k)}};
+const ss={getItem:(k:string)=>sessions.get(k)??null,setItem:(k:string,v:string)=>{sessions.set(k,v)},removeItem:(k:string)=>{sessions.delete(k)}};
+Object.assign(globalThis,{window:{localStorage:ls},localStorage:ls,sessionStorage:ss});
+const {INITIAL_SETTINGS}=await import('../src/data/seedData');
+const endpoint='https://script.google.com/macros/s/incremental-fixture/exec';INITIAL_SETTINGS.appsScriptUrl=endpoint;
+const {storage}=await import('../src/services/storage');
+const {GasService}=await import('../src/services/gasService');
+let loseNext=false,holdNext=false,release:(()=>void)|undefined;const calls:any[]=[];
+globalThis.fetch=async(url,init)=>{
+ assert.equal(url,endpoint);const body=JSON.parse(String(init?.body));calls.push(body);
+ const result=server.context.doPost({postData:{contents:JSON.stringify(body)}});
+ if(body.action==='MUTATE_BUSINESS'&&holdNext){holdNext=false;await new Promise<void>(resolve=>{release=resolve});}
+ if(body.action==='MUTATE_BUSINESS'&&loseNext){loseNext=false;throw Error('Simulated lost response after the Sheet saved');}
+ return new Response(JSON.stringify(result));
+};
+assert.equal((await storage.login('admin','Test-only-password-42!')).success,true);
+assert.equal((await storage.loadBusinessFromSheets()).success,true);
+const store={code:'AUTO1',name:'Automatic store',team:'B1',conditionQty:1,conditionUOM:'CAS',conditionProductDescription:'Product',commencingOn:'2026-01-01',expiringOn:'2028-12-31',annualBudget:1000};
+loseNext=true;const first=await storage.commitBusinessChange('ADD_CUSTOMER',store);assert.equal(first.success,false);
+assert.equal(storage.getCustomerByCode('AUTO1'),undefined,'failed acknowledgement must not show a local success');
+assert.equal(server.sheets.get('CUSTOMERS').rows.length,2,'the real mock Sheet saved before the response was lost');
+assert.equal(storage.getBusinessWriteState().pending,true);const operation=storage.getPendingBusinessWrite()!.id;
+assert.equal(storage.importCustomersFromRawRows([['header']]).success,false,'an import cannot overwrite a pending save');
+assert.equal((await GasService.syncAllToGoogleSheets()).success,false,'bulk publishing cannot race an incremental write');
+assert.equal((await storage.loadBusinessFromSheets(true)).success,false,'even explicit replacement protects a pending write');
+storage.init();assert.equal(storage.getPendingBusinessWrite()!.id,operation,'operation ID survives Reload');
+assert.equal((await storage.retryPendingBusinessWrite()).success,true);
+assert.equal(storage.getCustomerByCode('AUTO1')!.name,store.name);assert.equal(server.sheets.get('CUSTOMERS').rows.length,2,'retry cannot duplicate the store');assert.equal(storage.getPendingBusinessWrite(),null);assert.equal(storage.hasUnsyncedBusinessData(),false);
+// Another browser changes a different team while this cache is stale.
+const {remoteSession}=await import('../src/services/remoteAccounts');
+const external=server.context.doPost({postData:{contents:JSON.stringify({action:'MUTATE_BUSINESS',authToken:remoteSession(endpoint)!.token,payload:{id:'OP-external-browser',kind:'ADD_CUSTOMER',data:{...store,code:'OTHER',team:'B2'}}})}});assert.equal(external.success,true);
+assert.equal(storage.getCustomerByCode('OTHER'),undefined);
+values.set('mkt_sheet_business_baseline_v1',JSON.stringify({endpoint,fingerprint:'another-tab-baseline'}));
+assert.equal(storage.hasUnsyncedBusinessData(),false,"another tab cannot change this instance baseline");
+const transaction={customerCode:'AUTO1',date:'2026-11-01',category:'Other',description:'Receipt',amount:60};
+loseNext=true;assert.equal((await storage.commitBusinessChange('ADD_TRANSACTION',transaction)).success,false);const receipt=storage.getPendingBusinessWrite()!.id;
+assert.equal(storage.getTransactions().length,0,'local receipt appears only after acknowledgement');
+assert.equal((await storage.retryPendingBusinessWrite()).success,true);assert.equal(storage.getTransactions().length,1);assert.ok(storage.getCustomerByCode('OTHER'),'write acknowledgement includes unrelated changes from the other browser');assert.equal(storage.getBudgetForCustomer('AUTO1')!.totalUsed,60);assert.equal(server.sheets.get('BUDGET_TRANSACTIONS').rows.length,2);
+assert.equal(calls.filter(c=>c.action==='MUTATE_BUSINESS'&&c.payload.id===receipt).length,2);
+const txnId=storage.getTransactions()[0].id;assert.equal((await storage.commitBusinessChange('CANCEL_TRANSACTION',{txnId,reason:'Correction'})).success,true);assert.equal(storage.getBudgetForCustomer('AUTO1')!.totalUsed,0);assert.equal(storage.getTransactions()[0].status,'CANCELLED');
+assert.equal((await storage.commitBusinessChange('ADD_CUSTOMER',store)).success,false);assert.equal(storage.getPendingBusinessWrite(),null,'definite validation errors allow correcting the form');
+assert.equal((await storage.commitBusinessChange('REPRICE',{price:250000,recalculate:true})).success,true);assert.equal(storage.getSettings().pricePerCrate,250000);assert.equal(storage.getBudgetForCustomer('AUTO1')!.annualAmount,250000);
+assert.equal((await storage.addUser({username:'writer',fullName:'Team Writer',role:'TEAM_USER',team:'B1',password:'Writer-test-42!'})).success,true);
+// A response delivered after switching accounts cannot merge another user's data.
+holdNext=true;const waiting=storage.commitBusinessChange('ADD_CUSTOMER',{...store,code:'HELD'});
+for(let n=0;n<50&&!release;n++)await new Promise(resolve=>setTimeout(resolve,1));assert.ok(release);
+assert.equal((await storage.login('writer','Writer-test-42!')).success,true);release!();assert.equal((await waiting).success,false);assert.equal(storage.getCustomerByCode('HELD'),undefined);
+assert.equal((await storage.loadBusinessFromSheets()).success,true);
+assert.equal((await storage.commitBusinessChange('ADD_CUSTOMER',{...store,code:'WRONG',team:'B2'})).success,false);assert.equal(storage.getPendingBusinessWrite(),null);
+assert.equal((await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:'AUTO1'})).success,true);assert.equal(storage.getCustomerByCode('AUTO1')!.status,'DELETED');assert.equal(storage.getTransactions().length,1,'deletion retains the cancelled receipt');
+assert.equal(server.sheets.get('CUSTOMERS').rows.find((r:any[])=>r[0]==='AUTO1')[7],'DELETED');
+assert.equal((await storage.login('admin','Test-only-password-42!')).success,true);assert.ok(storage.getPendingBusinessWrite(),'original account retains its unacknowledged receipt');assert.equal((await storage.retryPendingBusinessWrite()).success,true);assert.ok(storage.getCustomerByCode('HELD'));
+const mutationCalls=calls.filter(c=>c.action==='MUTATE_BUSINESS');assert.ok(mutationCalls.length>8);assert.equal(calls.filter(c=>c.action==='SYNC_BULK_DATA').length,0,'normal edits never upload a full cached snapshot');
+console.log('PASS: real storage → authenticated Apps Script → Sheet writes, lost-response/reload retry, rejection feedback, price publication, bulk/read guards, account switches and deletion history.');

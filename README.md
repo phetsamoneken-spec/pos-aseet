@@ -2,7 +2,7 @@
 
 Existing MKT Budget React/Vite application, including five dashboard themes, customers, contract cycles, budgets, transactions, reports, user management, and Google Apps Script integration.
 
-Source version: **2026.11.01.12**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. Browser-specific backend overrides cannot change the production data source. Local development retains the separate demo mode. Admin chooses the theme in Settings and publishes it with the shared configuration. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. Business-data loading requires installing this release’s updated Code.gs.
+Source version: **2026.11.01.13**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. Browser-specific backend overrides cannot change the production data source. Local development retains the separate demo mode. Admin chooses the theme in Settings and publishes it with the shared configuration. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. Business-data loading requires installing this release’s updated Code.gs.
 
 ## Run locally
 
@@ -25,6 +25,7 @@ node --import tsx tests/customer-delete.test.ts
 node --import tsx tests/deployment-backend.test.ts
 node --import tsx tests/sheet-business-read.test.ts
 node --import tsx tests/admin-policy.test.ts
+node --import tsx tests/business-writes.test.ts
 TZ=Asia/Bangkok node --import tsx tests/annual-budgets.test.ts
 TZ=America/Los_Angeles node --import tsx tests/annual-budgets.test.ts
 TZ=Asia/Bangkok node --import tsx tests/excel-calendar-date.test.ts
@@ -61,13 +62,13 @@ Follow [`gas/SYNC-SETUP.md`](gas/SYNC-SETUP.md) for deployment and Settings setu
 
 The customer-list trash button lets Admins remove any store and team users remove only stores assigned to their own B1–B7 team. The storage mutation checks the same permission independently of button visibility. Confirmation identifies the store; deletion sets Status to DELETED, hides the store from active lists and dashboard totals, and keeps contract, budget and transaction history for audit. New transactions, contract cycles, and budget changes are blocked for deleted stores. Customer codes remain reserved.
 
-Edits remain in this browser until uploaded. An Admin must use the existing manual Sync to Google Sheets to send the DELETED status to CUSTOMERS; this does not physically remove Sheet rows or automatically send a team user’s local change to Sheets. Other devices receive the deletion on their next Sheet read. Deletion permissions here apply to the app’s local data service; backend publication requires Admin; legacy transaction routes check the authenticated team.
+The delete form sends an authenticated incremental operation and waits for the Sheet acknowledgement. The backend checks the current USERS assignment, sets CUSTOMERS.Status to DELETED, and retains financial history. Other devices receive the deletion on their next Sheet read. Both Admin and assigned Team users can publish permitted deletions without a separate full Sync.
 
 ## Data loading and local edits
 
 Read the deployment guide in [gas/READ-FROM-SHEETS.md](gas/READ-FROM-SHEETS.md). Reads require a server session; the backend ignores caller-supplied team/role and filters linked tables by the authenticated account. The old unauthenticated getCustomers GET is disabled. No passwords, session secrets, backend URL overrides, or unrelated audit logs are returned. Allowlisted common Admin settings are returned to all authenticated users. Financial values, including zero quantities and negative balances, are retained rather than regenerated.
 
-Before automatic replacement the app compares its cache with the last loaded/uploaded baseline. Unsynced edits are kept, including edits made while a read is in flight. Explicit replacement prompts the user and downloads a JSON backup first. Malformed responses, unsupported backend versions, stale account responses and failed reads do not replace the cache. This is manual upload plus authenticated snapshot reads, not live per-edit writes, merging, or full multi-user conflict resolution. Excel imports, Settings saves, and explicit budget recalculation publish automatically; ordinary local business edits retain the existing Admin Sync workflow.
+Before automatic replacement the app compares its cache with the last loaded/uploaded baseline. Unsynced edits are kept, including edits made while a read is in flight. Explicit replacement prompts the user and downloads a JSON backup first. Malformed responses, unsupported backend versions, stale account responses and failed reads do not replace the cache. Normal forms publish incremental operations and receive the latest authoritative snapshot for the signed-in scope. Lost responses retain a durable operation ID for retry. Excel remains an Admin full-publication workflow and now rejects stale server revisions. Existing edits made by older local-only releases require backup and review.
 
 ## Validation limits
 
@@ -79,6 +80,10 @@ This export contains no live spreadsheet identifier or account credentials. Conf
 
 ## Contract-anniversary annual budgets
 
-Budgets reset on each contract anniversary in the Lao calendar day (UTC+7), with separate retained annual balances and no carry-forward. Current dashboards select the current year; contract details show all years. Backdated receipts and cancellations affect their original year. See [annual budget rules and installation](gas/ANNUAL-BUDGETS.md). Install this release’s Code.gs and deploy a new version of the existing Web App before syncing annual rows. Reads derive the correct year without writing cells; Admin Sync persists annual rows. Legacy spending without dated transactions stays in the first year for review.
+Budgets reset on each contract anniversary in the Lao calendar day (UTC+7), with separate retained annual balances and no carry-forward. Current dashboards select the current year; contract details show all years. Backdated receipts and cancellations affect their original year. See [annual budget rules and installation](gas/ANNUAL-BUDGETS.md). Install this release’s Code.gs and deploy a new version of the existing Web App before syncing annual rows. Reads derive the correct year; authenticated business writes or Admin Sync persist annual rows. Reads also complete previously authorized, unfinished journal plans when recovery is needed. Legacy spending without dated transactions stays in the first year for review.
 
 Production uses the owner-supplied November 1 replacement deployment in `src/config/backend.ts` on fresh and existing devices. Both prior deployment URLs are recognized for cache migration. A changed deployment requires signing in again; pending local business edits are preserved.
+
+## Automatic Sheet writes
+
+Normal store, expense, cancellation, contract and budget forms now submit authenticated incremental writes and wait for Sheet acknowledgement. Admin can manage all teams; Team users can add/delete their own stores and record/cancel their own team expenses. Store deletions persist as DELETED and retain financial history. Lost responses and partial writes can be retried without duplicates. Full Excel publication rejects stale Sheet revisions. See [installation, recovery and existing-cache behavior](gas/AUTO-SAVE.md). Install this release’s Code.gs and deploy a new version of the existing Web App; normal edits then need no separate Admin Sync.

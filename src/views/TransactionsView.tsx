@@ -66,11 +66,14 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
     'Other'
   ];
 
-  const handleConfirmCancel = (e: React.FormEvent) => {
+  const [isSaving,setIsSaving]=useState(false);
+  const handleConfirmCancel = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!cancellingTxn || !cancelReason.trim()) return;
+    if (!cancellingTxn || !cancelReason.trim()||isSaving) return;
 
-    const res = storage.cancelTransaction(cancellingTxn.id, cancelReason.trim());
+    setIsSaving(true);
+    const res = await storage.commitBusinessChange('CANCEL_TRANSACTION',{txnId:cancellingTxn.id,reason:cancelReason.trim()});
+    setIsSaving(false);
     if (res.success) {
       setCancellingTxn(null);
       setCancelReason('');
@@ -411,6 +414,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                 </button>
                 <button
                   type="submit"
+                  disabled={isSaving}
                   className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white shadow-md shadow-rose-600/30"
                 >
                   {lang === 'lo' ? 'ຢືນຢັນການຍົກເລີກ' : 'Confirm Cancel'}

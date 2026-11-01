@@ -5,7 +5,8 @@ import {storage} from '../services/storage';
 export function SheetDataNotice(){
   const [state,setState]=useState(storage.getSheetDataState());
   const [backupError,setBackupError]=useState('');
-  useEffect(()=>storage.subscribe(()=>setState({...storage.getSheetDataState()})),[]);
+  const [write,setWrite]=useState(storage.getBusinessWriteState());
+  useEffect(()=>storage.subscribe(()=>{setState({...storage.getSheetDataState()});setWrite(storage.getBusinessWriteState());}),[]);
   if(!storage.getSettings().appsScriptUrl)return null;
   const lang=storage.getSettings().language;
   const load=async()=>{
@@ -21,11 +22,17 @@ export function SheetDataNotice(){
     }
     await storage.loadBusinessFromSheets(dirty);
   };
-  return <div className={`mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-xs ${state.status==='error'||state.status==='local'?'border-amber-200 bg-amber-50 text-amber-900':'border-slate-200 bg-white text-slate-600'}`}>
+  return <>
+    {write.status!=='idle'&&<div className={`mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-xs ${write.status==='error'?'border-amber-200 bg-amber-50 text-amber-900':write.status==='saved'?'border-emerald-200 bg-emerald-50 text-emerald-800':'border-blue-200 bg-blue-50 text-blue-800'}`}>
+      <p role={write.status==='error'?'alert':'status'} className="flex-1">{write.message}</p>
+      {write.pending&&write.status!=='saving'&&<button type="button" onClick={()=>void storage.retryPendingBusinessWrite()} className="rounded-lg border px-3 py-2 font-semibold">{lang==='lo'?'ລອງບັນທຶກຊ້ຳ':'Retry save'}</button>}
+      {write.status==='error'&&storage.getCurrentUser()?.role==='ADMIN'&&<a href="https://raw.githubusercontent.com/phetsamoneken-spec/foc-support/main/gas/Code.gs" target="_blank" rel="noreferrer" className="text-blue-700 underline">Code.gs</a>}
+    </div>}
+    <div className={`mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-xs ${state.status==='error'||state.status==='local'?'border-amber-200 bg-amber-50 text-amber-900':'border-slate-200 bg-white text-slate-600'}`}>
     <p role={state.status==='error'?'alert':'status'} className="min-w-0 flex-1">{backupError || state.message || (lang==='lo'?'ຂໍ້ມູນລູກຄ້າຈາກ Google Sheet':'Customer data from Google Sheets')}</p>
-    <button type="button" onClick={load} disabled={state.status==='loading'} className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 font-semibold disabled:opacity-50">
+    <button type="button" onClick={load} disabled={state.status==='loading'||write.status==='saving'||write.pending&&!storage.hasUnsyncedBusinessData()} className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 font-semibold disabled:opacity-50">
       <RefreshCw className={`h-4 w-4 ${state.status==='loading'?'animate-spin':''}`} />{lang==='lo'?'ໂຫຼດຈາກ Sheet':'Load from Sheet'}
     </button>
     {state.status==='error'&&storage.getCurrentUser()?.role==='ADMIN'&&<a href="https://raw.githubusercontent.com/phetsamoneken-spec/foc-support/main/gas/Code.gs" target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline">Code.gs</a>}
-  </div>;
+  </div></>;
 }

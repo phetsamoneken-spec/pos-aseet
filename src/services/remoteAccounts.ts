@@ -1,6 +1,6 @@
 import type { User } from '../types';
 import type { BusinessSnapshot } from './businessData';
-export interface AccountResponse { success: boolean; message?: string; error?: string; user?: User; users?: User[]; token?: string; expiresAt?: string; dataVersion?:number; scope?:string; snapshot?:BusinessSnapshot; spreadsheetId?:string; settingsVersion?:number; settings?:unknown; }
+export interface AccountResponse { success: boolean; message?: string; error?: string; user?: User; users?: User[]; token?: string; expiresAt?: string; dataVersion?:number; scope?:string; snapshot?:BusinessSnapshot; spreadsheetId?:string; writeVersion?:number; retryable?:boolean; mutationId?:string; customerCodes?:string[]; patch?:BusinessSnapshot; entityId?:string; businessRevision?:string; settingsVersion?:number; settings?:unknown; }
 let memory: { endpoint: string; token: string; expiresAt: string } | null = null;
 function key(endpoint: string) { return 'mkt-sheet-session:' + endpoint; }
 export function remoteSession(endpoint: string) {
@@ -17,7 +17,7 @@ export async function accountRequest(endpoint: string, action: string, payload: 
     const response = await fetch(endpoint, {method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,payload,authToken:remoteSession(endpoint)?.token})});
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const result = await response.json() as AccountResponse;
-    if (result.success !== true) return {success:false,message:result.message || result.error || 'Account operation failed'};
+    if (result.success !== true) return {success:false,message:result.message || result.error || 'Account operation failed',writeVersion:result.writeVersion,retryable:result.retryable};
     if (result.token && result.expiresAt) {
       memory = {endpoint,token:result.token,expiresAt:result.expiresAt};
       try { sessionStorage.setItem(key(endpoint), JSON.stringify({token:result.token,expiresAt:result.expiresAt})); } catch {}

@@ -57,8 +57,10 @@ export const AddContractModal: React.FC<AddContractModalProps> = ({
     setAnnualBudget(qty * pricePerCrate);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [isSaving,setIsSaving]=useState(false);
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if(isSaving)return;
     setErrorMessage(null);
 
     if (!customerCode) {
@@ -75,7 +77,8 @@ export const AddContractModal: React.FC<AddContractModalProps> = ({
       return;
     }
 
-    const res = storage.addNewContractCycle({
+    setIsSaving(true);
+    const res = await storage.commitBusinessChange('NEW_CONTRACT',{
       customerCode,
       commencingOn,
       expiringOn,
@@ -83,6 +86,7 @@ export const AddContractModal: React.FC<AddContractModalProps> = ({
       notes
     });
 
+    setIsSaving(false);
     if (res.success) {
       onSuccess();
     } else {
@@ -229,6 +233,7 @@ export const AddContractModal: React.FC<AddContractModalProps> = ({
             </button>
             <button
               type="submit"
+              disabled={isSaving}
               className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-md shadow-blue-600/30 transition cursor-pointer active:scale-95"
             >
               {lang === 'lo' ? 'ບັນທຶກສັນຍາຮອບໃໝ່' : 'Activate New Cycle'}

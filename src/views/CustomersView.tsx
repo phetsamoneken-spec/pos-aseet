@@ -190,12 +190,16 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
     setTimeout(() => setFeedbackMsg(null), 4000);
   };
 
-  const handleDeleteCustomer = (customer: Customer) => {
+  const [deletingCode,setDeletingCode]=useState<string|null>(null);
+  const handleDeleteCustomer = async (customer: Customer) => {
+    if(deletingCode)return;
     const confirmed = window.confirm(lang === 'lo'
       ? `ລົບຮ້ານ “${customer.name}” (${customer.code}) ຂອງທີມ ${customer.team} ອອກຈາກລາຍຊື່ບໍ່?\nປະຫວັດສັນຍາ ແລະລາຍຈ່າຍຈະຍັງເກັບໄວ້.`
       : `Delete store “${customer.name}” (${customer.code}), Team ${customer.team}, from the active list?\nContract and transaction history will be retained.`);
     if (!confirmed) return;
-    const result = storage.deleteCustomer(customer.code);
+    setDeletingCode(customer.code);
+    const result = await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:customer.code});
+    setDeletingCode(null);
     if (result.success) setCurrentPage(page => Math.min(page, Math.max(1, Math.ceil((sorted.length - 1) / pageSize))));
     showToast(result.message, result.success);
   };
@@ -295,7 +299,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
             >
               {lang === 'lo' ? 'ອັບໂຫຼດໄຟລ໌ Excel ດຽວນີ້' : 'Upload Excel File Now'}
             </button>}
-            {isAdmin && (
+            {isAdmin && !settings.appsScriptUrl && (
               <button
                 onClick={() => {
                   storage.resetToSeedData();
@@ -512,6 +516,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
                           {storage.canDeleteCustomer(item.customer.code) && <button
                             type="button"
                             onClick={() => handleDeleteCustomer(item.customer)}
+                            disabled={Boolean(deletingCode)}
                             title={lang === 'lo' ? 'ລົບຮ້ານ' : 'Delete store'}
                             aria-label={`${lang === 'lo' ? 'ລົບຮ້ານ' : 'Delete store'} ${item.customer.name}`}
                             className="p-1.5 rounded-lg text-rose-600 hover:text-rose-700 hover:bg-rose-50 transition cursor-pointer"
@@ -572,7 +577,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
       )}
 
       {/* Delete All Customers Modal */}
-      {showDeleteAllModal && (
+      {showDeleteAllModal && isAdmin && (
         <DeleteAllCustomersModal
           customerCount={sorted.length}
           onClose={() => setShowDeleteAllModal(false)}
@@ -580,8 +585,8 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
             setShowDeleteAllModal(false);
             showToast(
               lang === 'lo'
-                ? 'ລຶບລາຍຊື່ລູກຄ້າທັງໝົດສຳເລັດແລ້ວ! ພ້ອມອັບໂຫຼດໄຟລ໌ Excel ໃໝ່.'
-                : 'All customer records deleted successfully. Ready for new Excel import.'
+                ? 'ລົບຮ້ານທັງໝົດອອກຈາກລາຍຊື່ແລ້ວ; ປະຫວັດລາຍຈ່າຍຍັງເກັບໄວ້.'
+                : 'All stores removed from the active list. Spending history retained.'
             );
           }}
           onOpenUploadExcel={() => {

@@ -53,13 +53,14 @@ export default function App() {
       if(document.visibilityState==='hidden'||Date.now()-lastRead<5000)return;
       if(currentUser && backendUrl && storage.hasRemoteUserSession()){
         lastRead=Date.now();
+        if(storage.getPendingBusinessWrite()){const saved=await storage.retryPendingBusinessWrite();if(!saved.success)return;}
         if(storage.hasUnsyncedBusinessData()){const common=await storage.refreshSharedSettings();if(!common.success)return;}
         await storage.loadBusinessFromSheets();
       }
     };
     const calendarTimer=window.setInterval(()=>storage.refreshBudgetCalendar(),30000);
-    refresh();window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);
-    return ()=>{window.clearInterval(calendarTimer);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
+    refresh();window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);window.addEventListener('online',refresh);
+    return ()=>{window.clearInterval(calendarTimer);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);window.removeEventListener('online',refresh);};
   },[currentUser?.id,backendUrl]);
 
   // Modal States

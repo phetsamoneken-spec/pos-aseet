@@ -58,11 +58,14 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
     setAnnualBudget(qty * pricePerCrate);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [isSaving,setIsSaving]=useState(false);
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if(isSaving)return;
     setErrorMessage(null);
 
-    const res = storage.addCustomer({
+    setIsSaving(true);
+    const res = await storage.commitBusinessChange('ADD_CUSTOMER',{
       code,
       name,
       team,
@@ -77,6 +80,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
       province
     });
 
+    setIsSaving(false);
     if (res.success) {
       onSuccess();
     } else {
@@ -295,6 +299,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
             </button>
             <button
               type="submit"
+              disabled={isSaving}
               className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-md shadow-blue-600/30 transition cursor-pointer active:scale-95"
             >
               {lang === 'lo' ? 'ບັນທຶກລູກຄ້າໃໝ່' : 'Register Customer'}

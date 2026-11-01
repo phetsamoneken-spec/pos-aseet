@@ -69,8 +69,10 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
     'Other'
   ];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [isSaving,setIsSaving]=useState(false);
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if(isSaving)return;
     setErrorMessage(null);
 
     if (!customerCode) {
@@ -94,7 +96,8 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
 
     if(!budget){setErrorMessage(lang==='lo'?'ວັນທີລາຍຈ່າຍຢູ່ນອກໄລຍະສັນຍາ':'Transaction date is outside the contract');return;}
 
-    const res = storage.addTransaction({
+    setIsSaving(true);
+    const res = await storage.commitBusinessChange('ADD_TRANSACTION',{
       customerCode,
       category,
       description,
@@ -105,6 +108,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       exceptionReason: allowException ? exceptionReason : undefined
     });
 
+    setIsSaving(false);
     if (res.success) {
       onSuccess();
     } else {
@@ -319,6 +323,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
             </button>
             <button
               type="submit"
+              disabled={isSaving}
               className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-md shadow-blue-600/30 transition cursor-pointer active:scale-95"
             >
               {t.save}

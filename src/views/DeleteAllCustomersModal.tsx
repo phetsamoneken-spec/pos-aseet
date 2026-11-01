@@ -30,11 +30,13 @@ export const DeleteAllCustomersModal: React.FC<DeleteAllCustomersModalProps> = (
   const [confirmInput, setConfirmInput] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const handleDelete = () => {
+  const [error,setError]=useState('');
+  const handleDelete = async () => {
+    if(isDeleting)return;
     setIsDeleting(true);
-    storage.clearAllCustomers();
+    const result=await storage.commitBusinessChange('DELETE_ALL_CUSTOMERS',{});
     setIsDeleting(false);
-    onSuccess();
+    if(result.success)onSuccess();else setError(result.message);
   };
 
   return (
@@ -52,7 +54,7 @@ export const DeleteAllCustomersModal: React.FC<DeleteAllCustomersModalProps> = (
                 {lang === 'lo' ? 'ລຶບລາຍຊື່ລູກຄ້າທັງໝົດ' : 'Delete All Customer Records'}
               </h3>
               <p className="text-xs text-rose-300">
-                {lang === 'lo' ? 'ການດຳເນີນງານນີ້ບໍ່ສາມາດຍົກເລີກໄດ້' : 'Irreversible Action'}
+                {lang === 'lo' ? 'ເກັບປະຫວັດສັນຍາ ແລະລາຍຈ່າຍໄວ້' : 'Contract and spending history retained'}
               </p>
             </div>
           </div>
@@ -67,6 +69,7 @@ export const DeleteAllCustomersModal: React.FC<DeleteAllCustomersModalProps> = (
 
         {/* Modal Body */}
         <div className="p-6 space-y-4">
+          {error&&<p role="alert" className="text-sm text-rose-700">{error}</p>}
           <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-900 space-y-2">
             <p className="font-bold text-sm text-rose-950">
               {lang === 'lo'
@@ -75,8 +78,8 @@ export const DeleteAllCustomersModal: React.FC<DeleteAllCustomersModalProps> = (
             </p>
             <p className="text-rose-800 leading-relaxed">
               {lang === 'lo'
-                ? 'ລາຍຊື່ລູກຄ້າ, ເງື່ອນໄຂສັນຍາສິນຄ້າ, ຮອບສັນຍາ, ງົບປະມານ, ແລະ ປະຫວັດທຸລະກຳທັງໝົດຈະຖືກລຶບລ້າງອອກຈາກລະບົບ ເພື່ອໃຫ້ທ່ານສາມາດເລີ່ມຕົ້ນອັບໂຫຼດໄຟລ໌ Excel ໃໝ່ໄດ້ສະອາດ 100%.'
-                : 'All customer accounts, condition items, contracts, budgets, and transactions will be cleared so you can import a fresh Excel file cleanly.'}
+                ? 'ຮ້ານທັງໝົດຈະຖືກປ່ຽນສະຖານະເປັນ DELETED ໃນ Sheet ແລະຖອນອອກຈາກລາຍຊື່. ປະຫວັດສັນຍາ, ງົບປະມານ ແລະລາຍຈ່າຍຍັງເກັບໄວ້.'
+                : 'Stores will be marked DELETED in the shared Sheet and removed from the active list. Contracts, budgets and transaction history are retained.'}
             </p>
           </div>
 

@@ -25,24 +25,13 @@ export const EditPricePerCrateModal: React.FC<EditPricePerCrateModalProps> = ({
   // Quick preset prices
   const presets = [220000, 240000, 250000, 260000, 280000, 300000];
 
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newPrice <= 0) return;
-
-    setIsSaving(true);
-    // Update settings first
-    storage.updateSettings({ pricePerCrate: newPrice });
-
-    let count = 0;
-    if (recalculateAll) {
-      const res = storage.recalculateBudgetsByPricePerCrate(newPrice);
-      count = res.updatedCount;
-    }
-
-    setTimeout(() => {
-      setIsSaving(false);
-      onSuccess(count, newPrice);
-    }, 200);
+  const [saveError,setSaveError]=useState('');
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();if(newPrice<=0||isSaving)return;
+    setIsSaving(true);setSaveError('');
+    const result=await storage.commitBusinessChange('REPRICE',{price:newPrice,recalculate:recalculateAll});
+    setIsSaving(false);
+    if(result.success)onSuccess(recalculateAll?storage.getCustomers().length:0,newPrice);else setSaveError(result.message);
   };
 
   // Sample preview for 125 crates (standard case)
@@ -59,6 +48,7 @@ export const EditPricePerCrateModal: React.FC<EditPricePerCrateModalProps> = ({
         transition={{ duration: 0.2 }}
         className="w-full max-w-lg rounded-3xl bg-white shadow-2xl border border-slate-100 overflow-hidden my-8"
       >
+        {saveError&&<p role="alert" className="p-4 text-sm text-rose-700">{saveError}</p>}
         {/* Header */}
         <div className="bg-slate-900 p-5 text-white flex items-center justify-between">
           <div className="flex items-center gap-2.5">

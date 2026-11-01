@@ -12,7 +12,7 @@
 const SPREADSHEET_ID = "";
 
 // Install this Code.gs ONLY. It includes initializeDatabase() and importExistingCustomerData().
-// Sync is an app -> Sheet upsert, not a two-way merge. Missing records are never deleted.
+// Full sync is a revision-guarded Admin upsert. Normal edits use MUTATE_BUSINESS; historical records are retained.
 const SYNC_TABLES = [
   ['customers', 'CUSTOMERS', ['Customer Code','Customer Name','Team','MDE','Phone','Address','Province','Status','Created At','Contact Person'], ['code','name','team','mde','phone','address','province','status','createdAt','contactPerson']],
   ['conditions', 'CUSTOMER_CONDITIONS', ['ID','Customer Code','Condition Quantity','Condition UOM','Product Description','Updated At','Price per Unit'], ['id','customerCode','conditionQuantity','conditionUOM','conditionProductDescription','updatedAt','pricePerUnit']],
@@ -176,10 +176,12 @@ function doPost(e) {
 
     const action = postData.action;
     const payload = postData.payload || {};
+    if(action==='MUTATE_BUSINESS')return jsonResponse(mutateBusiness_(payload,postData.authToken));
+    if(['GET_BUSINESS_DATA','SYNC_BULK_DATA','ADD_TRANSACTION','CANCEL_TRANSACTION','NEW_CONTRACT_CYCLE','UPDATE_BUDGET'].indexOf(action)>=0){requireSession_(userTables_(),postData.authToken,false);recoverBusinessWrites_();}
     if (action === 'GET_BUSINESS_DATA') return jsonResponse(readBusinessData_(postData.authToken));
     if (action === 'GET_SHARED_SETTINGS') { const ss=userTables_(),actor=requireSession_(ss,postData.authToken,false);return jsonResponse({success:true,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor)}); }
     if (action === 'SAVE_SHARED_SETTINGS') return jsonResponse(saveSharedSettings_(payload,postData.authToken));
-    if (action === 'SYNC_BULK_DATA') requireSession_(userTables_(),postData.authToken,true);
+    if (action === 'SYNC_BULK_DATA') {requireSession_(userTables_(),postData.authToken,true);if(payload.expectedBusinessRevision!==readBusinessData_(postData.authToken).businessRevision)return jsonResponse({success:false,message:'Sheet changed on another device. Back up local edits, load the latest Sheet and retry.'});}
     if (action==='ADD_TRANSACTION'||action==='CANCEL_TRANSACTION') return jsonResponse(handleAnnualTransaction_(action,payload,postData.authToken));
     if (['NEW_CONTRACT_CYCLE','UPDATE_BUDGET'].indexOf(action)>=0) authorizeLegacyBusiness_(action,payload,postData.authToken);
     const userActions = ['AUTH_LOGIN','AUTH_ME','AUTH_LOGOUT','GET_USERS','SYNC_USERS','ADD_USER','UPDATE_USER','RESET_USER_PASSWORD','DELETE_USER','UPDATE_PROFILE'];
@@ -202,6 +204,7 @@ function doPost(e) {
         break;
       case "SYNC_BULK_DATA":
         result = handleBulkSync(payload);
+        if(result.success)result.businessRevision=readBusinessData_(postData.authToken).businessRevision;
         break;
       default:
         result = { success: false, message: "Unsupported action: " + action };
@@ -2061,7 +2064,7 @@ function readBusinessData_(token) {
   snapshot.transactions.forEach(function(row){row.status=row.status || 'ACTIVE';});
   const annual=projectAnnualBudgets(snapshot.contracts,snapshot.budgets,snapshot.transactions);
   snapshot.budgets=annual.budgets;snapshot.transactions=annual.transactions;
-  return {success:true,annualBudgetVersion:1,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
+  return {success:true,businessRevision:digest_(JSON.stringify(snapshot)),annualBudgetVersion:1,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
 }
 
 
@@ -2258,4 +2261,124 @@ function handleAnnualTransaction_(action,p,token){
  const result=handleBulkSync({budgets:data.budgets,transactions:data.transactions,logs:[{id:'LOG-'+Utilities.getUuid(),timestamp:new Date().toISOString(),user:actor[1],role:actor[5],team:txn.team,action:action,details:txn.id+' / '+txn.budgetId}]});
  if(!result.success)return result;
  return {success:true,id:txn.id,budgetId:txn.budgetId,annualBudgetVersion:1,message:action==='ADD_TRANSACTION'?'Transaction added successfully':'Transaction cancelled'};
+}
+
+
+// Recoverable, authenticated incremental writes. Only server-built row plans
+// enter the journal; replays use absolute upserts and cannot double-charge.
+const WRITE_JOURNAL_HEADERS_=['Operation ID','Actor ID','Request Hash','Plan Hash','State','Chunk Number','Chunk Count','Plan JSON','Updated At'];
+function writeJournal_(){
+ const ss=getSpreadsheet();let sheet=ss.getSheetByName('APP_WRITES');
+ if(!sheet){sheet=ss.insertSheet('APP_WRITES');sheet.getRange(1,1,1,9).setValues([WRITE_JOURNAL_HEADERS_]);}
+ const rows=sheet.getDataRange().getValues();
+ if(JSON.stringify(rows[0].slice(0,9))!==JSON.stringify(WRITE_JOURNAL_HEADERS_))throw new Error('APP_WRITES: invalid journal headers');
+ return sheet;
+}
+function journalOperations_(sheet){
+ const groups=new Map();sheet.getDataRange().getValues().slice(1).forEach(function(row,index){if(!row[0])return;const id=String(row[0]);if(!groups.has(id))groups.set(id,[]);groups.get(id).push({row:row,index:index+2});});return groups;
+}
+function replayBusinessWrite_(sheet,parts){
+ const first=parts[0].row;if(first[4]==='DONE')return;
+ if(parts.length!==Number(first[6]))throw new Error('Incomplete APP_WRITES journal; contact Admin');
+ const text=parts.slice().sort(function(a,b){return Number(a.row[5])-Number(b.row[5]);}).map(function(p){return p.row[7];}).join('');
+ if(digest_(text)!==first[3])throw new Error('APP_WRITES checksum mismatch; contact Admin');
+ const plan=JSON.parse(text),result=handleBulkSync(plan.tables);
+ if(!result.success)throw new Error(result.error||result.message||'Sheet write incomplete; retry the same operation');
+ parts.forEach(function(part){sheet.getRange(part.index,5).setValue('DONE');});SpreadsheetApp.flush();
+}
+function recoverBusinessWrites_(){
+ const ss=getSpreadsheet(),sheet=ss.getSheetByName('APP_WRITES');if(!sheet)return;
+ journalOperations_(writeJournal_()).forEach(function(parts){replayBusinessWrite_(sheet,parts);});
+}
+function writeText_(value,name,max){const text=String(value==null?'':value).trim();if(!text||text.length>(max||2000))throw new Error('Invalid '+name);return text;}
+function writeNumber_(value,name){const number=Number(value);if(!isFinite(number)||number<0)throw new Error('Invalid '+name);return number;}
+function writeDates_(data){if(!isCalendarDate(data.commencingOn)||!isCalendarDate(data.expiringOn)||data.expiringOn<data.commencingOn)throw new Error('Invalid contract dates');}
+function writePatch_(snapshot,codes){
+ const set=new Set(codes),patch={};['customers','conditions','contracts','budgets','transactions'].forEach(function(key){patch[key]=snapshot[key].filter(function(row){return set.has(key==='customers'?row.code:row.customerCode);});});return patch;
+}
+function buildBusinessWrite_(kind,p,actor,snapshot,id){
+ const admin=actor[5]==='ADMIN',now=new Date().toISOString(),tables={},codes=[],result={};
+ function requireAdmin(){if(!admin)throw new Error('Admin permission required');}
+ function customer(code){const c=snapshot.customers.find(function(c){return c.code===code;});if(!c||c.status==='DELETED')throw new Error('Customer not found or deleted');return c;}
+ function budgetRow(contract,amount){return {id:'BDG-'+contract.id,contractId:contract.id,customerCode:contract.customerCode,team:contract.team,annualAmount:amount,totalUsed:0,remainingAmount:amount,utilizationPercentage:0,status:'NORMAL',updatedAt:now};}
+ if(kind==='ADD_CUSTOMER'){
+  const code=writeText_(p.code,'customer code',80).toUpperCase(),team=String(p.team),name=writeText_(p.name,'customer name',300);writeDates_(p);if(!/^[A-Z0-9][A-Z0-9_-]{0,79}$/.test(code))throw new Error('Invalid customer code');
+  if(!/^B[1-7]$/.test(team)||!admin&&team!==String(actor[6]))throw new Error('Permission denied for this team');
+  // Check the whole ID namespace without returning another team's records.
+  const sheet=getSpreadsheet().getSheetByName('CUSTOMERS'),rows=sheet?sheet.getDataRange().getValues():[];
+  if(rows.slice(1).some(function(r){return String(r[0]).trim().toUpperCase()===code;}))throw new Error('Duplicate Customer Code');
+  const c={code:code,name:name,team:team,mde:'MDE-'+team,phone:String(p.phone||''),address:String(p.address||''),province:String(p.province||''),status:'ACTIVE',createdAt:businessToday()};
+  const quantity=writeNumber_(p.conditionQty,'condition quantity'),price=readSharedSettings_(getSpreadsheet()).pricePerCrate||240000;
+  const amount=admin?writeNumber_(p.annualBudget,'annual budget'):quantity*price;
+  const contract={id:'CNT-'+id,customerCode:code,customerName:name,team:team,commencingOn:p.commencingOn,expiringOn:p.expiringOn,cycleNumber:1,status:'ACTIVE',createdAt:now};
+  const annual=projectAnnualBudgets([contract],[budgetRow(contract,amount)],[]);
+  tables.customers=[c];tables.conditions=[{id:'CND-'+id,customerCode:code,conditionQuantity:quantity,conditionUOM:String(p.conditionUOM||'CAS'),conditionProductDescription:String(p.conditionProductDescription||''),pricePerUnit:price,updatedAt:now}];tables.contracts=[contract];tables.budgets=annual.budgets;codes.push(code);result.entityId=code;
+ }else if(kind==='DELETE_CUSTOMER'){
+  const code=String(p.customerCode),c=customer(code);tables.customers=[Object.assign({},c,{status:'DELETED'})];codes.push(code);result.entityId=code;
+ }else if(kind==='DELETE_ALL_CUSTOMERS'){
+  requireAdmin();tables.customers=snapshot.customers.map(function(c){codes.push(c.code);return Object.assign({},c,{status:'DELETED'});});
+ }else if(kind==='ADD_TRANSACTION'){
+  const code=String(p.customerCode),c=customer(code),date=p.date||businessToday(),amount=writeNumber_(p.amount,'transaction amount');
+  if(!isCalendarDate(date)||amount<=0)throw new Error('Invalid transaction date or amount');
+  const contract=snapshot.contracts.filter(function(c){return c.customerCode===code&&date>=c.commencingOn&&date<=c.expiringOn;}).sort(function(a,b){return b.cycleNumber-a.cycleNumber;})[0];
+  if(!contract)throw new Error('Transaction date is outside the contract');
+  const budget=selectAnnualBudget(snapshot.budgets.filter(function(b){return b.contractId===contract.id;}),date,false);
+  if(!budget)throw new Error('Annual budget not found');
+  if(!admin&&amount>budget.remainingAmount)throw new Error('Annual budget exceeded; Admin approval required');
+  budget.totalUsed+=amount;refreshBudgetTotals(budget);budget.updatedAt=now;
+  if(budget.status==='EXCEEDED'){budget.allowException=true;budget.exceptionReason=String(p.exceptionReason||'Admin approved');}
+  const txn={id:'TXN-'+id,date:date,customerCode:code,customerName:c.name,team:c.team,contractId:contract.id,budgetId:budget.id,category:writeText_(p.category,'category',120),description:writeText_(p.description,'description',2000),amount:amount,invoiceRef:String(p.invoiceRef||''),createdBy:actor[1],createdAt:now,status:'ACTIVE'};
+  // Include normalized legacy annual rows/references on the first write.
+  tables.budgets=snapshot.budgets.filter(function(b){return b.customerCode===code;});tables.transactions=snapshot.transactions.filter(function(t){return t.customerCode===code;}).concat([txn]);codes.push(code);result.entityId=txn.id;
+ }else if(kind==='CANCEL_TRANSACTION'){
+  const txn=snapshot.transactions.find(function(t){return t.id===p.txnId;});if(!txn||txn.status!=='ACTIVE')throw new Error('Transaction not found or already cancelled');
+  const budget=snapshot.budgets.find(function(b){return b.id===txn.budgetId;});if(!budget)throw new Error('Original annual budget not found');
+  txn.status='CANCELLED';txn.cancellationReason=writeText_(p.reason,'cancellation reason',2000);txn.cancelledBy=actor[1];txn.cancelledAt=now;
+  budget.totalUsed=Math.max(0,budget.totalUsed-txn.amount);refreshBudgetTotals(budget);budget.updatedAt=now;
+  tables.budgets=snapshot.budgets.filter(function(b){return b.customerCode===txn.customerCode;});tables.transactions=snapshot.transactions.filter(function(t){return t.customerCode===txn.customerCode;});codes.push(txn.customerCode);result.entityId=txn.id;
+ }else if(kind==='NEW_CONTRACT'){
+  requireAdmin();const code=String(p.customerCode),c=customer(code);writeDates_(p);
+  if(snapshot.contracts.some(function(contract){return contract.customerCode===code&&p.commencingOn<=contract.expiringOn&&p.expiringOn>=contract.commencingOn;}))throw new Error('Contract dates overlap an existing cycle');
+  const cycle=snapshot.contracts.filter(function(contract){return contract.customerCode===code;}).reduce(function(max,c){return Math.max(max,c.cycleNumber);},0)+1;
+  const contract={id:'CNT-'+id,customerCode:code,customerName:c.name,team:c.team,commencingOn:p.commencingOn,expiringOn:p.expiringOn,cycleNumber:cycle,status:'ACTIVE',notes:String(p.notes||''),createdAt:now};
+  tables.contracts=[contract];tables.budgets=projectAnnualBudgets([contract],[budgetRow(contract,writeNumber_(p.annualBudget,'annual budget'))],[]).budgets;codes.push(code);result.entityId=contract.id;
+ }else if(kind==='UPDATE_BUDGET'){
+  requireAdmin();const budget=snapshot.budgets.find(function(b){return b.id===p.budgetId;});if(!budget)throw new Error('Budget not found');customer(budget.customerCode);
+  const amount=writeNumber_(p.newAmount,'annual budget');tables.budgets=snapshot.budgets.filter(function(b){return b.contractId===budget.contractId&&(b.periodNumber||1)>=(budget.periodNumber||1);}).map(function(b){b.annualAmount=amount;b.updatedAt=now;return refreshBudgetTotals(b);});codes.push(budget.customerCode);result.entityId=budget.id;
+ }else if(kind==='REPRICE'){
+  requireAdmin();const price=writeNumber_(p.price,'crate price');if(price<=0)throw new Error('Invalid crate price');tables.settings={pricePerCrate:price};
+  if(p.recalculate===true){
+   tables.conditions=[];tables.budgets=[];tables.transactions=[];
+   snapshot.customers.filter(function(c){return c.status!=='DELETED';}).forEach(function(c){
+    const condition=snapshot.conditions.find(function(row){return row.customerCode===c.code;});if(!condition)return;
+    condition.pricePerUnit=price;condition.updatedAt=now;tables.conditions.push(condition);codes.push(c.code);
+    const contract=snapshot.contracts.filter(function(row){return row.customerCode===c.code;}).sort(function(a,b){return b.cycleNumber-a.cycleNumber;}).find(function(row){return businessToday()>=row.commencingOn&&businessToday()<=row.expiringOn;});
+    const current=contract&&selectAnnualBudget(snapshot.budgets.filter(function(b){return b.contractId===contract.id;}));
+    snapshot.budgets.filter(function(b){return b.customerCode===c.code;}).forEach(function(b){if(current&&b.contractId===current.contractId&&(b.periodNumber||1)>=(current.periodNumber||1)){b.annualAmount=condition.conditionQuantity*price;refreshBudgetTotals(b);b.updatedAt=now;}tables.budgets.push(b);});
+    tables.transactions=tables.transactions.concat(snapshot.transactions.filter(function(t){return t.customerCode===c.code;}));
+   });
+  }
+ }else throw new Error('Unsupported business write');
+ tables.logs=[{id:'LOG-'+id,timestamp:now,user:actor[1],role:actor[5],team:admin?'ALL':actor[6],action:kind,details:codes.join(', ')}];
+ // Validate all affected tables before recording a recoverable plan.
+ SYNC_TABLES.filter(function(table){return tables[table[0]]!==undefined;}).forEach(function(table){planSyncTable_(getSpreadsheet(),table,tables[table[0]]);});
+ return {tables:tables,codes:codes,result:result};
+}
+function mutateBusiness_(payload,token){
+ const ss=userTables_(),actor=requireSession_(ss,token,false);recoverBusinessWrites_();
+ const id=String(payload.id||''),kind=String(payload.kind||''),data=payload.data;
+ if(!/^OP-[A-Za-z0-9-]{8,100}$/.test(id)||!data||typeof data!=='object'||Array.isArray(data))throw new Error('Invalid business write request');
+ const sheet=writeJournal_(),hash=digest_(JSON.stringify({kind:kind,data:data}));let parts=journalOperations_(sheet).get(id);
+ if(parts){if(String(parts[0].row[1])!==String(actor[0])||parts[0].row[2]!==hash)throw new Error('Operation ID was already used');}
+ else {
+  let plan;try{plan=buildBusinessWrite_(kind,data,actor,readBusinessData_(token).snapshot,id);}catch(error){return {success:false,writeVersion:1,retryable:false,message:String(error)};}
+  const text=JSON.stringify(plan),chunks=[];for(let n=0;n<text.length;){let end=Math.min(n+28000,text.length);const last=text.charCodeAt(end-1);if(end<text.length&&last>=0xD800&&last<=0xDBFF)end--;chunks.push(text.slice(n,end));n=end;}
+  const now=new Date().toISOString(),rows=chunks.map(function(chunk,index){return [id,String(actor[0]),hash,digest_(text),'PREPARED',index,chunks.length,chunk,now];});
+  if(sheet.getMaxRows()<sheet.getLastRow()+rows.length)sheet.insertRowsAfter(sheet.getMaxRows(),rows.length);
+  sheet.getRange(sheet.getLastRow()+1,1,rows.length,9).setValues(rows);SpreadsheetApp.flush();parts=journalOperations_(sheet).get(id);
+ }
+ replayBusinessWrite_(sheet,parts);
+ const planText=parts.slice().sort(function(a,b){return a.row[5]-b.row[5];}).map(function(p){return p.row[7];}).join(''),plan=JSON.parse(planText),read=readBusinessData_(token);
+ const patch=writePatch_(read.snapshot,plan.codes);
+ return {success:true,writeVersion:1,mutationId:id,scope:read.scope,user:read.user,customerCodes:plan.codes,patch:patch,snapshot:read.snapshot,businessRevision:read.businessRevision,entityId:plan.result.entityId,message:'Saved to Google Sheet'};
 }
