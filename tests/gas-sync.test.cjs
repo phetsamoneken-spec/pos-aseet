@@ -176,3 +176,18 @@ test('bootstrap requires a private password property and migrates legacy plainte
  assert.match(legacy.sheets.get('USERS').rows[1][2],/^\$2[aby]\$/);
  assert.equal(userRequest(legacy,'AUTH_LOGIN',{username:'admin',password:'Old-pass-42!'}).success,true);
 });
+
+test('store deletion status syncs without removing financial history and survives repeat sync',()=>{
+ const b=backend();
+ assert.equal(b.post(payload()).success,true);
+ const p=payload();p.customers[0].status='DELETED';
+ assert.equal(b.post(p).success,true);
+ const customers=b.sheets.get('CUSTOMERS');
+ const statusColumn=customers.rows[0].indexOf('Status');
+ assert.equal(customers.rows[1][statusColumn],'DELETED');
+ assert.equal(b.sheets.get('CONTRACTS').rows.length,2);
+ assert.equal(b.sheets.get('BUDGET_TRANSACTIONS').rows.length,2);
+ assert.equal(b.post(p).success,true);
+ assert.equal(customers.rows.length,2);
+ assert.equal(customers.rows[1][statusColumn],'DELETED');
+});

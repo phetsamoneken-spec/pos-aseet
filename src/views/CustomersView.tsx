@@ -182,10 +182,22 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
   const [showUploadExcelModal, setShowUploadExcelModal] = useState(false);
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+  const [feedbackIsError, setFeedbackIsError] = useState(false);
 
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, success = true) => {
     setFeedbackMsg(msg);
+    setFeedbackIsError(!success);
     setTimeout(() => setFeedbackMsg(null), 4000);
+  };
+
+  const handleDeleteCustomer = (customer: Customer) => {
+    const confirmed = window.confirm(lang === 'lo'
+      ? `ລົບຮ້ານ “${customer.name}” (${customer.code}) ຂອງທີມ ${customer.team} ອອກຈາກລາຍຊື່ບໍ່?\nປະຫວັດສັນຍາ ແລະລາຍຈ່າຍຈະຍັງເກັບໄວ້.`
+      : `Delete store “${customer.name}” (${customer.code}), Team ${customer.team}, from the active list?\nContract and transaction history will be retained.`);
+    if (!confirmed) return;
+    const result = storage.deleteCustomer(customer.code);
+    if (result.success) setCurrentPage(page => Math.min(page, Math.max(1, Math.ceil((sorted.length - 1) / pageSize))));
+    showToast(result.message, result.success);
   };
 
   return (
@@ -193,8 +205,8 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
       
       {/* Toast Feedback */}
       {feedbackMsg && (
-        <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-2 shadow-sm animate-in fade-in">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+        <div role={feedbackIsError ? 'alert' : 'status'} className={`p-3.5 rounded-2xl border text-xs font-bold flex items-center gap-2 shadow-sm animate-in fade-in ${feedbackIsError ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+          {feedbackIsError ? <AlertTriangle className="w-4 h-4 flex-shrink-0" /> : <CheckCircle2 className="w-4 h-4 flex-shrink-0" />}
           <span>{feedbackMsg}</span>
         </div>
       )}
@@ -496,6 +508,13 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
                           >
                             <Plus className="w-4 h-4" />
                           </button>
+                          {storage.canDeleteCustomer(item.customer.code) && <button
+                            type="button"
+                            onClick={() => handleDeleteCustomer(item.customer)}
+                            title={lang === 'lo' ? 'ລົບຮ້ານ' : 'Delete store'}
+                            aria-label={`${lang === 'lo' ? 'ລົບຮ້ານ' : 'Delete store'} ${item.customer.name}`}
+                            className="p-1.5 rounded-lg text-rose-600 hover:text-rose-700 hover:bg-rose-50 transition cursor-pointer"
+                          ><Trash2 className="w-4 h-4" /></button>}
                         </div>
                       </td>
                     </tr>

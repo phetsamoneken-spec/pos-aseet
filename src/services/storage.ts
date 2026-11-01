@@ -136,6 +136,7 @@ class StorageService {
         const cartonSteps = [125, 200, 150, 250, 100, 300, 125, 350, 175, 500];
 
         this.customers.forEach((cust, idx) => {
+          if (cust.status === 'DELETED') return;
           let cond = this.conditions.find((c) => c.customerCode === cust.code);
           if (!cond) {
             cond = {
@@ -366,6 +367,11 @@ class StorageService {
     return this.currentUser.team === customerTeam;
   }
 
+  public canDeleteCustomer(code: string): boolean {
+    const customer = this.getCustomerByCode(code);
+    return !!customer && customer.status !== 'DELETED' && this.canEditCustomer(customer.team);
+  }
+
   public canManageUsers(): boolean {
     return this.currentUser?.role === 'ADMIN';
   }
@@ -411,6 +417,7 @@ class StorageService {
     let updatedCount = 0;
 
     this.conditions.forEach((cond) => {
+      if (this.getCustomerByCode(cond.customerCode)?.status === 'DELETED') return;
       cond.pricePerUnit = newPrice;
       const budget = this.getBudgetForCustomer(cond.customerCode);
       if (budget && cond.conditionQuantity > 0) {
@@ -491,7 +498,7 @@ class StorageService {
 
   // --- Customers Query & Mutation ---
   public getCustomers(teamFilter?: Team | 'ALL', search?: string): Customer[] {
-    let list = this.customers;
+    let list = this.customers.filter(customer => customer.status !== 'DELETED');
 
     // RBAC: If team user, enforce assigned team strictly
     if (this.currentUser && this.currentUser.role !== 'ADMIN' && this.currentUser.team !== 'ALL') {
@@ -516,6 +523,19 @@ class StorageService {
 
   public getCustomerByCode(code: string): Customer | undefined {
     return this.customers.find((c) => c.code === code);
+  }
+
+  public deleteCustomer(code: string): { success: boolean; message: string } {
+    const customer = this.getCustomerByCode(code);
+    if (!customer || customer.status === 'DELETED') return { success:false, message:'ບໍ່ພົບຮ້ານຄ້ານີ້ ຫຼືຮ້ານຖືກລົບແລ້ວ (Store not found or already deleted)' };
+    if (!this.canDeleteCustomer(code)) return { success:false, message:'ທ່ານບໍ່ມີສິດລົບຮ້ານຂອງທີມອື່ນ (Permission denied)' };
+    // Retain the record as a tombstone so manual Sheet upserts transmit the
+    // deletion status and financial history never loses its customer reference.
+    customer.status = 'DELETED';
+    this.persistAll();
+    this.logAction('DELETE_CUSTOMER', `Deleted store ${customer.name} (${customer.code}), Team ${customer.team}. Contract and transaction history retained.`);
+    this.notify();
+    return { success:true, message:'ລົບຮ້ານອອກຈາກລາຍຊື່ສຳເລັດ. ປະຫວັດສັນຍາ ແລະລາຍຈ່າຍຍັງເກັບໄວ້. (Store removed; history retained.)' };
   }
 
   public getCustomerCondition(customerCode: string): CustomerCondition | undefined {
@@ -606,6 +626,8 @@ class StorageService {
     if (!customer) {
       return { success: false, message: 'Customer not found' };
     }
+
+    if (customer.status === 'DELETED') return { success:false, message:'ຮ້ານນີ້ຖືກລົບແລ້ວ (Store has been deleted)' };
 
     // Team validation
     if (!this.canAccessTeam(customer.team)) {
@@ -759,6 +781,8 @@ class StorageService {
       return { success: false, message: 'Customer not found' };
     }
 
+    if (customer.status === 'DELETED') return { success:false, message:'ຮ້ານນີ້ຖືກລົບແລ້ວ (Store has been deleted)' };
+
     if (this.currentUser?.role !== 'ADMIN') {
       return { success: false, message: 'ສະເພາະ Admin ເທົ່ານັ້ນທີ່ສາມາດສ້າງຮອບສັນຍາໃໝ່ໄດ້' };
     }
@@ -821,6 +845,7 @@ class StorageService {
     if (!budget) {
       return { success: false, message: 'ບໍ່ພົບງົບປະມານນີ້' };
     }
+    if (this.getCustomerByCode(budget.customerCode)?.status === 'DELETED') return { success:false, message:'ຮ້ານນີ້ຖືກລົບແລ້ວ (Store has been deleted)' };
 
     const oldAmount = budget.annualAmount;
     budget.annualAmount = Number(newAmount);
@@ -1075,10 +1100,7 @@ class StorageService {
         ? this.currentUser.team
         : selectedTeam;
 
-    const filteredCustomers =
-      effectiveTeam && effectiveTeam !== 'ALL'
-        ? this.customers.filter((c) => c.team === effectiveTeam)
-        : this.customers;
+    const filteredCustomers = this.getCustomers(effectiveTeam);
 
     const customerCodes = new Set(filteredCustomers.map((c) => c.code));
 
@@ -1104,7 +1126,7 @@ class StorageService {
     const teams: Team[] = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7'];
 
     teams.forEach((t) => {
-      const tCusts = this.customers.filter((c) => c.team === t);
+      const tCusts = this.getCustomers().filter((c) => c.team === t);
       const tCustCodes = new Set(tCusts.map((c) => c.code));
       const tBudgets = this.budgets.filter((b) => tCustCodes.has(b.customerCode));
 

@@ -66,6 +66,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
               <span className="text-xs font-bold bg-slate-800 text-slate-300 px-2 py-0.5 rounded-md">
                 {customer.team} ({customer.mde})
               </span>
+              {customer.status === 'DELETED' && <span className="text-xs text-rose-300">{lang === 'lo' ? 'ຮ້ານຖືກລົບແລ້ວ' : 'Deleted store'}</span>}
             </div>
             <h2 className="text-lg sm:text-xl font-black mt-2 text-white">
               {customer.name}
@@ -119,7 +120,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          {customer.status !== 'DELETED' && <div className="flex items-center gap-2">
             <button
               onClick={() => onOpenAddTransaction(customer.code)}
               className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition cursor-pointer shadow-xs"
@@ -137,7 +138,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                 <span>{t.addNewContract}</span>
               </button>
             )}
-          </div>
+          </div>}
         </div>
 
         {/* Modal Body */}

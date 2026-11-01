@@ -34,7 +34,7 @@ export interface Customer {
   address?: string;
   province?: string;
   contactPerson?: string;
-  status: 'ACTIVE' | 'INACTIVE';
+  status: 'ACTIVE' | 'INACTIVE' | 'DELETED';
   createdAt: string;
 }
 

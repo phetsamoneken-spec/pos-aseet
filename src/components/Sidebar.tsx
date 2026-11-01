@@ -79,7 +79,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'customers',
       label: t.navCustomers,
       icon: Users,
-      badge: '578',
+      badge: String(storage.getCustomers().length),
       adminOnly: false
     },
     {
