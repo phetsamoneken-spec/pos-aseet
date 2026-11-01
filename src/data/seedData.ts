@@ -4,10 +4,11 @@
  */
 
 import { Customer, CustomerCondition, Contract, Budget, BudgetTransaction, User, Team, TEAMS, AppSettings } from '../types';
+import { resolveBackendUrl } from '../config/backend';
 
 export const INITIAL_SETTINGS: AppSettings = {
   spreadsheetId: 'YOUR_SPREADSHEET_ID',
-  appsScriptUrl: '',
+  appsScriptUrl: resolveBackendUrl(undefined),
   currencyCode: 'LAK',
   currencySymbol: '₭',
   currencyPosition: 'after',

@@ -1,4 +1,5 @@
 import { accountRequest, clearRemoteSession, remoteSession, type AccountResponse } from './remoteAccounts';
+import { resolveBackendUrl } from '../config/backend';
 /**
  * Local Data Storage and Business Logic Engine
  * Manages Persistence, Access Permissions, Budget Calculations, and Audit Logging
@@ -87,9 +88,8 @@ class StorageService {
   public init() {
     try {
       const storedSettings = safeGetItem(STORAGE_KEYS.SETTINGS);
-      if (storedSettings) {
-        this.settings = { ...INITIAL_SETTINGS, ...JSON.parse(storedSettings) };
-      }
+      this.settings = { ...INITIAL_SETTINGS, ...(storedSettings ? JSON.parse(storedSettings) : {}) };
+      this.settings.appsScriptUrl = resolveBackendUrl(this.settings.appsScriptUrl, INITIAL_SETTINGS.appsScriptUrl);
 
       const storedUsers = safeGetItem(STORAGE_KEYS.USERS);
       if (storedUsers) {
@@ -113,11 +113,11 @@ class StorageService {
       const storedAuth = safeGetItem(STORAGE_KEYS.AUTH);
       if (storedAuth) {
         this.currentUser = JSON.parse(storedAuth);
-      } else {
+      } else if (!this.settings.appsScriptUrl) {
         // Default login as Admin for instant accessibility
         this.currentUser = this.users[0];
         safeSetItem(STORAGE_KEYS.AUTH, JSON.stringify(this.currentUser));
-      }
+      } else this.currentUser = null;
 
       if (this.settings.appsScriptUrl && !this.hasRemoteUserSession()) this.currentUser = null;
 
@@ -399,6 +399,7 @@ class StorageService {
 
   public updateSettings(newSettings: Partial<AppSettings>) {
     this.settings = { ...this.settings, ...newSettings };
+    this.settings.appsScriptUrl = resolveBackendUrl(this.settings.appsScriptUrl, INITIAL_SETTINGS.appsScriptUrl);
     const serialized = JSON.stringify(this.settings);
     safeSetItem(STORAGE_KEYS.SETTINGS, serialized);
     let persisted = false;

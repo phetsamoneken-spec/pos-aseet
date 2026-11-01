@@ -37,6 +37,7 @@ jobs:
           node tests/gas-sync.test.cjs
           node --import tsx tests/remote-accounts.test.ts
           node --import tsx tests/customer-delete.test.ts
+          node --import tsx tests/deployment-backend.test.ts
           node --import tsx tests/gas-service.test.ts
           node --import tsx tests/app-updates.test.ts
       - name: Build the application

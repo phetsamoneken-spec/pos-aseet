@@ -2,7 +2,7 @@
 
 Existing MKT Budget React/Vite application, including five dashboard themes, customers, contract cycles, budgets, transactions, reports, user management, and Google Apps Script integration.
 
-Source version: **2026.11.01.6**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using the backend URL already saved in Settings. Theme selection is in Settings and saves immediately per user in this browser. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. This frontend fix works with the existing 2026.10.31.6 Code.gs backend.
+Source version: **2026.11.01.7**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. An explicit backend saved by Admin still takes precedence. Local development retains the separate demo mode. Theme selection is in Settings and saves immediately per user in this browser. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. This frontend fix works with the existing 2026.10.31.6 Code.gs backend.
 
 ## Run locally
 
@@ -22,6 +22,7 @@ npm run lint
 node tests/gas-sync.test.cjs
 node --import tsx tests/remote-accounts.test.ts
 node --import tsx tests/customer-delete.test.ts
+node --import tsx tests/deployment-backend.test.ts
 node --import tsx tests/gas-service.test.ts
 node --import tsx tests/app-updates.test.ts
 npm run build
@@ -29,6 +30,10 @@ npm run preview
 ```
 
 The build creates `dist/` and copies it to `docs/`. Preview serves the last production build; rerun the build after source edits. Generated output and node_modules are excluded from Git.
+
+## Login on another device
+
+Open the published FOC Support URL and sign in with an account already saved in the Sheet USERS table. The production build automatically selects the shared Apps Script backend from `src/config/backend.ts`; Login asks only for username and password. Explicit Admin backend overrides remain available in Settings. Private passwords and session tokens are not included in the deployment configuration. Browser-only accounts must be migrated from their original browser first. This fixes account login across devices; customer and budget data remains browser-local under the existing manual sync design.
 
 ## Google Sheets sync
 

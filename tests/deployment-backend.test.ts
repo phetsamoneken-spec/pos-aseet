@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict';
+import { DEPLOYED_BACKEND_URL, resolveBackendUrl } from '../src/config/backend';
+import { INITIAL_SETTINGS } from '../src/data/seedData';
+
+assert.equal(resolveBackendUrl(undefined,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
+assert.equal(resolveBackendUrl('',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
+assert.equal(resolveBackendUrl('   ',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
+const custom='https://script.google.com/macros/s/custom-deployment/exec';
+assert.equal(resolveBackendUrl(' '+custom+' ',DEPLOYED_BACKEND_URL),custom);
+
+// Model the production default without enabling remote mode in local demo tests.
+INITIAL_SETTINGS.appsScriptUrl=DEPLOYED_BACKEND_URL;
+const local=new Map<string,string>(), sessions=new Map<string,string>();
+const ls={getItem:(key:string)=>local.get(key)??null,setItem:(key:string,value:string)=>{local.set(key,value)},removeItem:(key:string)=>{local.delete(key)}};
+Object.assign(globalThis,{window:{localStorage:ls},localStorage:ls,sessionStorage:{getItem:(key:string)=>sessions.get(key)??null,setItem:(key:string,value:string)=>{sessions.set(key,value)},removeItem:(key:string)=>{sessions.delete(key)}}});
+const {storage}=await import('../src/services/storage');
+const {clearRemoteSession}=await import('../src/services/remoteAccounts');
+assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL);
+assert.equal(storage.getCurrentUser(),null,'a fresh production device must require backend login');
+assert.equal(local.get('mkt_current_user_v1'),undefined,'do not persist a pretend Admin session');
+const user={id:'sheet-team-b1',username:'MDE-B1',fullName:'Sheet Team',role:'TEAM_USER',team:'B1',isActive:true,createdAt:'2026-01-01'};
+let succeeds=false,calls=0;
+globalThis.fetch=async(url,init)=>{
+ assert.equal(url,DEPLOYED_BACKEND_URL);
+ const body=JSON.parse(String(init?.body));assert.equal(body.action,'AUTH_LOGIN');
+ assert.equal(body.payload.username,'MDE-B1');
+ calls++;
+ return new Response(JSON.stringify(succeeds ? {success:true,user,token:'test-session-token',expiresAt:new Date(Date.now()+100000).toISOString()} : {success:false,error:'Incorrect username/password'}));
+};
+assert.equal((await storage.login('MDE-B1','Wrong-test-password!')).success,false);
+assert.equal(storage.getCurrentUser(),null,'failed remote login must not fall back to local accounts');
+succeeds=true;
+assert.equal((await storage.login('MDE-B1','Correct-test-password!')).success,true);
+assert.equal(storage.getCurrentUser()!.id,user.id);
+assert.equal(calls,2);
+assert.ok(!local.get('mkt_current_user_v1')!.includes('password'));
+
+clearRemoteSession(DEPLOYED_BACKEND_URL);
+local.set('mkt_settings_v1',JSON.stringify({...storage.getSettings(),appsScriptUrl:'  '}));
+storage.init();
+assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL,'old blank endpoint must use deployment default');
+assert.equal(storage.getCurrentUser(),null,'cached user without backend session must sign in again');
+storage.updateSettings({appsScriptUrl:''});
+assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL);
+storage.updateSettings({appsScriptUrl:custom});storage.init();
+assert.equal(storage.getSettings().appsScriptUrl,custom,'preserve explicit Admin overrides');
+console.log('PASS: fresh-device default backend, legacy blank settings, custom overrides, required server login, rejected password and successful Sheet account login.');
