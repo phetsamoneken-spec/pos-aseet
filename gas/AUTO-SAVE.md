@@ -21,7 +21,7 @@
 
 Normal forms are acknowledgement-first: they do not add an optimistic local record while the Sheet save is pending. A durable per-account operation ID makes retries safe after a lost response or Reload. Only one outstanding operation per account/browser is submitted at a time; a definitely rejected validation error allows correcting the form. Uncertain requests remain available for retry. Browser storage must be enabled.
 
-Old edits made by previous app versions remain local until reviewed. They are not silently replaced or uploaded as a whole database. Back up those edits before loading current Sheet data. Excel remains an Admin full-publication workflow; full publication now requires the revision of the Sheet snapshot originally loaded. If another device or a direct Sheet edit changes the business records, a stale full snapshot is rejected and local data is retained for review. A cache from a release that did not record a server revision must first be backed up and reconciled with the current Sheet.
+Version 2026.11.01.15 automatically archives old browser data to BROWSER_RECOVERY, then loads the authoritative Sheet snapshot before continuing a permitted mutation. It retains a local downloadable copy as well. Backup failures keep the original cache. See DATABASE-CONTINUITY.md for primary-database cutover, user-inclusive backups, timestamps and fresh login. Excel full publication remains revision-guarded.
 
 ## Backend details
 

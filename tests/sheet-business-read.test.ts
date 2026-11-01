@@ -14,12 +14,13 @@ const data:BusinessSnapshot={
  budgets:[{id:'BD1',customerCode:'S1',contractId:'CT1',team:'B1',annualAmount:100,totalUsed:120,remainingAmount:-20,utilizationPercentage:120,status:'EXCEEDED',updatedAt:''}],
  transactions:[{id:'TX1',customerCode:'S1',customerName:'Sheet shop',contractId:'CT1',budgetId:'BD1',team:'B1',amount:120,date:'2026-01-01',category:'Other',description:'Imported',createdBy:'admin',createdAt:'2026-01-01',status:'ACTIVE'}]
 };
-let requests=0, response:unknown, release:(()=>void)|undefined, delay=false;
+let requests=0, response:unknown, release:(()=>void)|undefined, delay=false,allowBackup=false;
 let actor=admin;
 globalThis.fetch=async(_url,init)=>{
  const body=JSON.parse(String(init?.body));
  if(body.action==='AUTH_LOGIN')return new Response(JSON.stringify({success:true,user:actor,token:'test-'+actor.id,expiresAt:new Date(Date.now()+100000).toISOString()}));
  if(body.action==='AUTH_LOGOUT')return new Response(JSON.stringify({success:true}));
+ if(body.action==='SAVE_BROWSER_RECOVERY'){if(!allowBackup)return new Response(JSON.stringify({success:false,message:'Backup temporarily unavailable'}));if(delay)await new Promise<void>(resolve=>{release=resolve});return new Response(JSON.stringify({...response as object,recoveryVersion:1,recoveryId:body.payload.recovery.id,user:actor}));}
  assert.equal(body.action,'GET_BUSINESS_DATA');assert.equal(body.authToken,'test-'+actor.id);requests++;
  if(delay)await new Promise<void>(resolve=>{release=resolve});
  return new Response(JSON.stringify(response));
@@ -48,6 +49,7 @@ const count=requests;
 assert.equal((await storage.loadBusinessFromSheets()).success,false);
 assert.equal(requests,count,'automatic reads must keep unsynced edits without sending a request');
 assert.ok(storage.getCustomerByCode('LOCAL1'));
+allowBackup=true;
 response={success:true,businessRevision:"fixture-revision",dataVersion:1,settingsVersion:1,settings:{language:'lo'},scope:'ALL',snapshot:{...data,conditions:[{...data.conditions[0],customerCode:'missing'}]}};
 assert.equal((await storage.loadBusinessFromSheets(true)).success,false);
 assert.ok(storage.getCustomerByCode('LOCAL1'),'malformed snapshots must be rejected before any write');
@@ -58,6 +60,7 @@ assert.equal((await loading).success,false,'edits made during a read must be pre
 assert.ok(storage.getCustomerByCode('LOCAL2'));
 delay=false;assert.equal((await storage.loadBusinessFromSheets(true)).success,true);
 assert.equal(storage.getCustomerByCode('LOCAL1'),undefined);
+assert.ok(storage.getLocalRecoveryBackup()!.business.customers.some(c=>c.code==='LOCAL1'),'replaced local data has a recoverable backup');
 assert.ok(!JSON.stringify(storage.exportBusinessBackup()).includes('test-sheet-admin'));
 actor={...admin,id:'sheet-team-b1',username:'team-one',role:'TEAM_USER',team:'B1'};
 await storage.login(actor.username,'Test-only-password!');

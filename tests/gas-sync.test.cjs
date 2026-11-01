@@ -10,6 +10,9 @@ function backend(options = {}) {
   const failWrites = new Set();
   class Sheet {
     constructor(name) { this.name = name; this.rows = []; }
+    getName(){return this.name;}
+    setName(name){if(sheets.has(name)&&name!==this.name)throw Error('Duplicate sheet name');sheets.delete(this.name);this.name=name;sheets.set(name,this);return this;}
+    copyTo(target){const copy=target.insertSheet('Copy-'+crypto.randomUUID());copy.rows=JSON.parse(JSON.stringify(this.rows));return copy;}
     getLastRow() { return this.rows.length; }
     getMaxRows() { return 10000; }
     getMaxColumns() { return 100; }
@@ -33,11 +36,11 @@ function backend(options = {}) {
     setFrozenRows() {}
     deleteRow(row) { this.rows.splice(row-1,1); }
   }
-  const ss = { getSpreadsheetTimeZone:()=> 'Asia/Bangkok', getId: () => 'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
+  const ss = { getSpreadsheetTimeZone:()=> 'Asia/Bangkok', getId: () => options.sheetId||'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
   const context = vm.createContext({
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'INITIAL_ADMIN_PASSWORD' ? (options.adminPassword === undefined ? 'Test-only-password-42!' : options.adminPassword) : (options.property === undefined ? ss.getId() : options.property) }) },
     SpreadsheetApp: { openById: id => { assert.equal(id, ss.getId()); return ss; }, getActiveSpreadsheet: () => options.bound ? ss : null, flush() {} },
-    LockService: { getScriptLock: () => ({ waitLock() { held = true; }, hasLock: () => held, releaseLock() { assert.ok(held); held = false; } }) },
+    LockService: { getScriptLock: () => ({ waitLock() { assert.equal(held,false,'must not acquire a nested script lock');held = true; }, hasLock: () => held, releaseLock() { assert.ok(held); held = false; } }) },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: s => ({ setMimeType: () => JSON.parse(s) }) },
     Utilities: {formatDate:(value,zone,format)=>{assert.equal(zone,'Asia/Bangkok');return format==='yyyy-MM-dd'?value.toISOString().slice(0,10):value.toISOString()},getUuid:()=>crypto.randomUUID(),DigestAlgorithm:{SHA_256:'sha256'},computeDigest:(_,s)=>[...crypto.createHash('sha256').update(s).digest()]},
     CacheService: {getScriptCache:()=>({get:()=>null,put(){},remove(){}})},
@@ -89,7 +92,7 @@ test('invalid later table is rejected before any table is written', () => {
 });
 test('legacy initializeDatabase remains idempotent and accepts extended sync columns', () => {
   const b = backend(); b.context.initializeDatabase(); b.context.initializeDatabase();
-  assert.equal(b.sheets.size, 10); assert.equal(b.sheets.get('USERS').rows.length, 2);
+  assert.equal(b.sheets.size, 12); assert.equal(b.sheets.get('USERS').rows.length, 2);
   assert.equal(b.post(payload()).success, true);
   assert.equal(b.sheets.get('CUSTOMER_CONDITIONS').rows[0].at(-1), 'Price per Unit');
 });
@@ -167,7 +170,7 @@ test('password reset invalidates old sessions, disable blocks login, and delete 
  const disabled=userRequest(b,'UPDATE_USER',{id:user.id,isActive:false},reset.token);assert.equal(disabled.success,true);
  assert.equal(userRequest(b,'AUTH_LOGIN',{username:'team2',password:'New-test-password-42!'}).success,false);
  assert.equal(userRequest(b,'DELETE_USER',{id:user.id},disabled.token).success,true);
- assert.ok(!b.sheets.get('USERS').rows.some(r=>r[0]===user.id));
+ assert.equal(b.sheets.get('USERS').rows.find(r=>r[0]===user.id)[10],'DELETED');assert.ok(b.sheets.get('USERS').rows.find(r=>r[0]===user.id)[12]);assert.ok(!userRequest(b,'GET_USERS',{},disabled.token).users.some(u=>u.id===user.id));
  assert.equal(userRequest(b,'DELETE_USER',{id:login.user.id},disabled.token).success,false);
 });
 test('bootstrap requires a private password property and migrates legacy plaintext without losing accounts',()=>{
@@ -371,4 +374,45 @@ test('large journal plans split into valid Unicode chunks and replay without los
  const saved=incremental(b,login.token,'large-plan-write','ADD_TRANSACTION',{customerCode:'LARGE',date:'2026-11-01',category:'Other',description:'Additional receipt',amount:2});assert.equal(saved.success,true);assert.equal(saved.snapshot.transactions.length,31);assert.equal(saved.snapshot.budgets[0].totalUsed,32);
  const parts=b.sheets.get('APP_WRITES').rows.filter(row=>row[0]==='OP-large-plan-write');assert.ok(parts.length>1);assert.equal(parts.every(row=>row[7].length<=28000&&!(row[7].charCodeAt(row[7].length-1)>=0xD800&&row[7].charCodeAt(row[7].length-1)<=0xDBFF)),true);
  assert.equal(incremental(b,login.token,'large-plan-write','ADD_TRANSACTION',{customerCode:'LARGE',date:'2026-11-01',category:'Other',description:'Additional receipt',amount:2}).snapshot.transactions.length,31);
+});
+
+test('legacy browser recovery backs up scoped data without applying stale balances or session/password fields',()=>{
+ const {b,login}=signedInBackend();incremental(b,login.token,'recovery-store01','ADD_CUSTOMER',newStore('RECOVERY'));
+ const recovery={id:'REC-browser-backup01',createdAt:'2026-11-01',reason:'DELETE_CUSTOMER',business:{customers:[{code:'RECOVERY',name:'Old local name',team:'B1',status:'ACTIVE'}],conditions:[],contracts:[],budgets:[],transactions:[]},users:[{id:'draft',username:'draft',fullName:'Draft',role:'TEAM_USER',team:'B1',password:'Do-not-copy-plaintext!',passwordHash:'Do-not-copy-hash!',token:login.token}],settings:{language:'lo'},logs:[],token:login.token};
+ const result=userRequest(b,'SAVE_BROWSER_RECOVERY',{recovery},login.token);assert.equal(result.success,true);assert.equal(result.recoveryVersion,1);assert.equal(result.snapshot.customers[0].name,'Store RECOVERY');
+ const archive=b.sheets.get('BROWSER_RECOVERY').rows.slice(1).filter(r=>r[0]===recovery.id).sort((a,b)=>a[5]-b[5]).map(r=>r[8]).join('');
+ assert.ok(archive.includes('Old local name'));assert.ok(!archive.includes('Do-not-copy'));assert.ok(!archive.includes(login.token));
+ assert.equal(userRequest(b,'SAVE_BROWSER_RECOVERY',{recovery},login.token).success,true);assert.equal(b.sheets.get('BROWSER_RECOVERY').rows.length,2,'repeat backup ID does not duplicate chunks');
+ const deleted=incremental(b,login.token,'recovery-delete1','DELETE_CUSTOMER',{customerCode:'RECOVERY'});assert.equal(deleted.success,true);assert.equal(deleted.snapshot.customers[0].status,'DELETED');assert.ok(deleted.snapshot.customers[0].deletedAt);
+ const history=b.sheets.get('CHANGE_HISTORY').rows;assert.ok(history.some(r=>r[3]==='DELETE_CUSTOMER'&&r[4]==='customers'&&r[5]==='RECOVERY'&&Number.isFinite(Date.parse(r[1]))));
+ assert.equal(userRequest(b,'BACKUP_DATABASE',{},login.token).success,true);
+ const backups=b.sheets.get('DATABASE_BACKUPS').rows.slice(1);const manual=backups.filter(r=>r[4]==='ADMIN_MANUAL').sort((a,b)=>a[5]-b[5]);const snapshot=JSON.parse(manual.map(r=>r[8]).join(''));assert.ok(snapshot.tables.USERS.some(r=>r[1]==='admin'));assert.equal(snapshot.tables.SESSIONS,undefined);assert.ok(!JSON.stringify(snapshot).includes(login.token));
+});
+
+test('primary database cutover preserves users/current rows, leaves fresh sessions and retires old database access',()=>{
+ const source=backend({sheetId:'SOURCE_SHEET_ID_0123456789'}),target=backend({sheetId:'TARGET_SHEET_ID_0123456789'});source.context.initializeDatabase();
+ const login=userRequest(source,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});assert.equal(login.success,true);
+ incremental(source,login.token,'cutover-store001','ADD_CUSTOMER',newStore('CUTOVER'));
+ const oldUserHash=source.sheets.get('USERS').rows[1][2];
+ target.ss.insertSheet('USERS').appendRow(['Old destination contents are retained']);
+ source.context.SpreadsheetApp.openById=id=>{if(id===source.ss.getId())return source.ss;if(id===target.ss.getId())return target.ss;throw Error('Unexpected spreadsheet ID');};
+ source.context.setDatabaseSetting_(source.ss,'primaryDatabaseId',target.ss.getId());source.context.setDatabaseSetting_(source.ss,'databaseRouteState','PENDING');
+ const ping=source.context.doGet({parameter:{action:'ping'}});assert.equal(ping.success,true);assert.equal(ping.spreadsheetId,target.ss.getId());
+ assert.equal(target.sheets.get('CUSTOMERS').rows[1][0],'CUTOVER');assert.equal(target.sheets.get('USERS').rows[1][2],oldUserHash);assert.equal(target.sheets.get('USERS').rows[1][7],true);assert.equal(source.sheets.get('USERS').rows[1][7],false,'old deployment cannot accept new authenticated writes');
+ assert.equal(target.sheets.get('SESSIONS').rows.length,1,'active session credentials are not copied');assert.ok([...target.sheets.keys()].some(name=>name.startsWith('PRE_CUTOVER_')&&name.endsWith('_USERS')));
+ assert.equal(userRequest(source,'AUTH_ME',{},login.token).success,false,'old session must sign in again');
+ const fresh=userRequest(source,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});assert.equal(fresh.success,true);assert.equal(fresh.user.id,login.user.id);assert.equal(target.sheets.get('SESSIONS').rows.length,2);
+ assert.equal(userRequest(source,'GET_BUSINESS_DATA',{},fresh.token).snapshot.customers[0].code,'CUTOVER');
+ assert.equal(source.context.databaseSetting_(source.ss,'databaseRouteState'),'ACTIVE');assert.equal(source.context.databaseSetting_(target.ss,'migrationSourceId'),source.ss.getId());
+});
+
+test('store edits are scoped, update linked names and timestamps, retain spending, and reject team budget inflation',()=>{
+ const {b,login}=signedInBackend();const created=incremental(b,login.token,'edit-store-init1','ADD_CUSTOMER',newStore('EDIT'));assert.equal(created.success,true);
+ const receipt=incremental(b,login.token,'edit-store-txn01','ADD_TRANSACTION',{customerCode:'EDIT',date:'2026-11-01',amount:40,category:'Other',description:'Keep spending'});assert.equal(receipt.success,true);
+ const updated=incremental(b,login.token,'edit-store-name1','UPDATE_CUSTOMER',{...newStore('EDIT'),name:'Updated store',phone:'02012345678',annualBudget:500});assert.equal(updated.success,true);assert.equal(updated.snapshot.customers[0].name,'Updated store');assert.ok(updated.snapshot.customers[0].updatedAt);assert.equal(updated.snapshot.transactions[0].customerName,'Updated store');assert.equal(updated.snapshot.budgets[0].totalUsed,40);assert.equal(updated.snapshot.budgets[0].annualAmount,500);
+ userRequest(b,'ADD_USER',{username:'editor',fullName:'Editor',role:'TEAM_USER',team:'B1',password:'Editor-test-42!'},login.token);const team=userRequest(b,'AUTH_LOGIN',{username:'editor',password:'Editor-test-42!'});
+ assert.equal(incremental(b,team.token,'edit-store-team1','UPDATE_CUSTOMER',{code:'EDIT',name:'Team contact edit',phone:'02087654321'}).success,true);
+ assert.equal(incremental(b,team.token,'edit-store-team2','UPDATE_CUSTOMER',{code:'EDIT',name:'Forged',annualBudget:900000}).success,false);
+ const deleted=userRequest(b,'DELETE_USER',{id:team.user.id},login.token);assert.equal(deleted.success,true);const row=b.sheets.get('USERS').rows.find(row=>row[0]===team.user.id);assert.equal(row[10],'DELETED');assert.ok(row[11]&&row[12]);
+ assert.ok(b.sheets.get('CHANGE_HISTORY').rows.some(row=>row[3]==='DELETE_USER'&&row[4]==='USERS'&&row[5]===team.user.id));assert.equal(deleted.users.some(user=>user.id===team.user.id),false);
 });

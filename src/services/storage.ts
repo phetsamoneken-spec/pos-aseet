@@ -1,3 +1,4 @@
+import {makeBrowserRecovery,type BrowserRecovery} from './legacyRecovery';
 import {businessWriteKey,newBusinessWriteId,type PendingBusinessWrite,type BusinessWriteKind,type BusinessWriteResult,type BusinessWriteState} from './businessWrites';
 import {businessToday, isCalendarDate, projectAnnualBudgets, selectAnnualBudget, refreshBudgetTotals} from './annualBudgets';
 import { accountRequest, clearRemoteSession, remoteSession, type AccountResponse } from './remoteAccounts';
@@ -87,6 +88,40 @@ class StorageService {
   private sheetLoadSequence = 0;
   private businessWriteFlight:Promise<BusinessWriteResult>|null=null;
   private writeFeedback:{key:string;status:BusinessWriteState['status'];message:string}|null=null;
+  private recoveryFlight:Promise<BusinessWriteResult>|null=null;
+  private recoveryPointer(){return 'foc-recovery-latest:'+this.currentWriteKey();}
+  public getLocalRecoveryBackup():BrowserRecovery|null {try{const key=safeGetItem(this.recoveryPointer());return key?JSON.parse(safeGetItem(key)||'null'):null;}catch{return null;}}
+  public async recoverLegacyCache(reason='LOAD_SHEET'):Promise<BusinessWriteResult>{
+    if(this.recoveryFlight)return this.recoveryFlight;
+    const actor=this.currentUser,endpoint=this.settings.appsScriptUrl,token=remoteSession(endpoint)?.token;
+    if(!actor||!token)return {success:false,message:'Login again to back up local data.'};
+    if(this.businessWriteFlight||this.bulkPublishing)return {success:false,message:'Wait for the current Sheet save to finish.'};
+    ++this.sheetLoadSequence;
+    const before=businessFingerprint(this.businessSnapshot());
+    const recovery=makeBrowserRecovery(this.businessSnapshot(),this.users,this.settings,this.logs,actor,reason);
+    const key='foc-recovery-v1:'+recovery.id;safeSetItem(key,JSON.stringify(recovery));safeSetItem(this.recoveryPointer(),key);
+    const run=async():Promise<BusinessWriteResult>=>{
+      this.sheetDataState={status:'loading',message:'ກຳລັງສຳຮອງຂໍ້ມູນເກົ່າລົງ Sheet ແລະໂຫຼດຂໍ້ມູນຫຼ້າສຸດ…'};this.notify();
+      const result=await accountRequest(endpoint,'SAVE_BROWSER_RECOVERY',{recovery});
+      if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return {success:false,message:'Login again after the database migration. Local backup retained.'};}
+      if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed; local backup retained.'};
+      try{
+        if(!result.success||result.recoveryVersion!==1||result.recoveryId!==recovery.id)throw Error(result.message||'Update Code.gs and deploy a new version to back up old browser data automatically.');
+        const user=result.user;if(!user||user.id!==actor.id||!['ADMIN','TEAM_USER'].includes(user.role)||user.role!=='ADMIN'&&!/^B[1-7]$/.test(user.team))throw Error('Invalid backup account');
+        const scope=user.role==='ADMIN'?'ALL':user.team;if(result.scope!==scope)throw Error('Invalid backup scope');
+        const data=validateBusinessSnapshot(result.snapshot,scope);
+        if(before!==businessFingerprint(this.businessSnapshot()))throw Error('Local data changed during backup. Retry to capture the latest edits.');
+        this.applySharedResponse(result,actor);this.settings={...this.settings,...sharedSettings(result.settings)};safeRemoveItem('mkt_shared_settings_pending_v1');
+        if(result.spreadsheetId)this.settings.spreadsheetId=result.spreadsheetId;
+        this.customers=data.customers;this.conditions=data.conditions;this.contracts=data.contracts;this.budgets=data.budgets;this.transactions=data.transactions;
+        this.users=user.role==='ADMIN'&&result.users?result.users:[user];
+        this.persistAll();this.recalculateContractStatuses();this.markBusinessSynced(endpoint,this.businessSnapshot(),result.businessRevision);
+        this.sheetDataState={status:'loaded',message:'ສຳຮອງຂໍ້ມູນເກົ່າລົງ Sheet ແລ້ວ. ຂໍ້ມູນໃນແອັບກົງກັບ Sheet; ເພີ່ມ/ແກ້ໄຂ/ລົບໄດ້.'};this.notify();
+        return {success:true,message:'Old browser data backed up; shared Sheet data loaded.'};
+      }catch(error){if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint))this.setCurrentUser(null);const message=error instanceof Error?error.message:String(error);this.sheetDataState={status:'error',message};this.notify();return {success:false,message};}
+    };
+    this.recoveryFlight=run();try{return await this.recoveryFlight;}finally{this.recoveryFlight=null;}
+  }
   private bulkPublishing=false;
   private businessBaselineText:string|null=null;
   private storeBusinessBaseline(value:{endpoint:string;fingerprint:string;revision?:string}){this.businessBaselineText=JSON.stringify(value);safeSetItem('mkt_sheet_business_baseline_v1',this.businessBaselineText);}
@@ -95,7 +130,7 @@ class StorageService {
     const key=this.currentWriteKey();if(!key)return null;
     try{const pending=JSON.parse(safeGetItem(key)||'null');return pending?.actorId===this.currentUser?.id&&pending.endpoint===this.settings.appsScriptUrl?pending:null;}catch{return null;}
   }
-  private migratePendingBusinessWrite(confirmedSheetId:string,previousSheetId:string):boolean {
+  private migratePendingBusinessWrite(confirmedSheetId:string,previousSheetId:string,migratedFrom=''):boolean {
     const actor=this.currentUser,endpoint=this.settings.appsScriptUrl;
     if(!actor||this.getPendingBusinessWrite()||!confirmedSheetId)return false;
     for(const oldEndpoint of RETIRED_BACKENDS){
@@ -103,7 +138,7 @@ class StorageService {
       let pending:PendingBusinessWrite;try{pending=JSON.parse(safeGetItem(oldKey)||'null');}catch{continue;}
       if(!pending||pending.actorId!==actor.id||pending.endpoint!==oldEndpoint)continue;
       const savedSheet=pending.spreadsheetId||previousSheetId;
-      if(!savedSheet||savedSheet==='YOUR_SPREADSHEET_ID'||savedSheet!==confirmedSheetId)continue;
+      if(!savedSheet||savedSheet==='YOUR_SPREADSHEET_ID'||savedSheet!==confirmedSheetId&&savedSheet!==migratedFrom)continue;
       const moved={...pending,endpoint,spreadsheetId:confirmedSheetId,previousEndpoint:oldEndpoint};
       const key=businessWriteKey(actor.id,endpoint),text=JSON.stringify(moved);
       try{window.localStorage.setItem(key,text);if(window.localStorage.getItem(key)!==text)return false;}catch{return false;}
@@ -115,13 +150,14 @@ class StorageService {
     const pending=Boolean(this.getPendingBusinessWrite()),feedback=this.writeFeedback?.key===this.currentWriteKey()?this.writeFeedback:null;
     return {status:feedback?.status||(pending?'error':'idle'),message:feedback?.message||(pending?'ມີການບັນທຶກທີ່ລໍສົ່ງໄປ Sheet (Pending Sheet save)':''),pending};
   }
-  public beginBulkPublish(){if(this.getPendingBusinessWrite()||this.businessWriteFlight||this.bulkPublishing)throw Error('Finish the pending Sheet save before importing or publishing a full snapshot.');this.bulkPublishing=true;}
+  public beginBulkPublish(){if(this.getPendingBusinessWrite()||this.businessWriteFlight||this.recoveryFlight||this.bulkPublishing)throw Error('Finish the pending Sheet save before importing or publishing a full snapshot.');this.bulkPublishing=true;}
   public endBulkPublish(){this.bulkPublishing=false;}
   public async commitBusinessChange(kind:BusinessWriteKind,data:Record<string,unknown>):Promise<BusinessWriteResult>{
     if(!this.currentUser)return {success:false,message:'Sign in first'};
     if(!this.settings.appsScriptUrl){
       switch(kind){
         case 'ADD_CUSTOMER':return this.addCustomer(data as Parameters<StorageService['addCustomer']>[0]);
+        case 'UPDATE_CUSTOMER':{const customer=this.getCustomerByCode(String(data.code));if(!customer||!this.canEditCustomer(customer.team))return {success:false,message:'Permission denied'};customer.name=String(data.name);customer.phone=String(data.phone||'');customer.address=String(data.address||'');customer.province=String(data.province||'');customer.updatedAt=new Date().toISOString();this.persistAll();this.notify();return {success:true,message:'Updated locally'};}
         case 'DELETE_CUSTOMER':return this.deleteCustomer(String(data.customerCode));
         case 'DELETE_ALL_CUSTOMERS':return this.clearAllCustomers();
         case 'ADD_TRANSACTION':return this.addTransaction(data as Parameters<StorageService['addTransaction']>[0]);
@@ -133,11 +169,15 @@ class StorageService {
     }
     if(this.bulkPublishing)return {success:false,message:'Wait for the Excel/Sheet publication to finish.'};
     if(!this.hasRemoteUserSession())return {success:false,message:'Login again to save to Sheet.'};
+    const originalCustomer=kind==='DELETE_CUSTOMER'?this.getCustomerByCode(String(data.customerCode)):undefined;
+    if(originalCustomer&&!this.canDeleteCustomer(originalCustomer.code))return {success:false,message:'Permission denied for this team'};
+    if(this.hasUnsyncedBusinessData()){const recovered=await this.recoverLegacyCache(kind);if(!recovered.success)return recovered;}
+    if(kind==='DELETE_CUSTOMER'&&originalCustomer&&(this.currentUser?.role==='ADMIN'||originalCustomer.team===this.currentUser?.team)&&(!this.getCustomerByCode(originalCustomer.code)||this.getCustomerByCode(originalCustomer.code)?.status==='DELETED'))return {success:true,message:'ຮ້ານນີ້ບໍ່ຢູ່ໃນລາຍຊື່ Sheet ແລ້ວ; ຂໍ້ມູນເກົ່າສຳຮອງໄວ້ແລ້ວ.'};
     const old=this.getPendingBusinessWrite();
     if(this.businessWriteFlight&&!old)return {success:false,message:'Wait for the current Sheet save to finish.'};
     if(old){if(old.kind!==kind||JSON.stringify(old.data)!==JSON.stringify(data))return {success:false,message:'ກະລຸນາລອງສົ່ງລາຍການທີ່ຄ້າງກ່ອນ (Retry the pending Sheet save first).'};return this.retryPendingBusinessWrite();}
     this.ensureAnnualBudgets();
-    if(this.hasUnsyncedBusinessData())return {success:false,message:'ມີການແກ້ໄຂເກົ່າໃນ browser ທີ່ຍັງບໍ່ Sync. ກະລຸນາສຳຮອງ ແລະໃຫ້ Admin ກວດກ່ອນ (Existing local edits need review before automatic saving).'};
+    if(this.hasUnsyncedBusinessData())return {success:false,message:'Local data changed while preparing the save. Try again.'};
     const pending:PendingBusinessWrite={id:newBusinessWriteId(),kind,data:JSON.parse(JSON.stringify(data)),actorId:this.currentUser.id,endpoint:this.settings.appsScriptUrl,createdAt:new Date().toISOString(),spreadsheetId:this.settings.spreadsheetId};
     // Persist the operation ID before sending; a lost response can be retried
     // after Reload without creating duplicate stores or expenses.
@@ -152,10 +192,11 @@ class StorageService {
     if(!actor||!token)return {success:false,message:'Login again to retry the pending Sheet save.'};
     if(this.bulkPublishing)return {success:false,message:'Wait for Sheet publication to finish.'};
     const before=businessFingerprint(this.businessSnapshot()),wasClean=!this.hasUnsyncedBusinessData();
-    if(!wasClean){const message='Back up local edits and load the latest Sheet before retrying this saved operation.';this.writeFeedback={key,status:'error',message};this.notify();return {success:false,message};}
+    if(!wasClean){const recovered=await this.recoverLegacyCache('RETRY_SAVE');if(!recovered.success)return recovered;return this.retryPendingBusinessWrite();}
     const run=async():Promise<BusinessWriteResult>=>{
       this.writeFeedback={key,status:'saving',message:'ກຳລັງບັນທຶກໄປ Sheet… (Saving to Sheet…)'};this.notify();
       const result=await accountRequest(endpoint,'MUTATE_BUSINESS',{id:pending.id,kind:pending.kind,data:pending.data});
+      if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return {success:false,message:'Login again. The save receipt is retained.'};}
       if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed; the save receipt is retained for the original account.'};
       try{
         if(!result.success){
@@ -212,6 +253,7 @@ class StorageService {
     if(!actor||!token)return {success:false,message:'Sign in first'};
     try{
       const result=await accountRequest(endpoint,'GET_SHARED_SETTINGS');
+      if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return {success:false,message:'Login again after the database migration.'};}
       if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed'};
       if(!result.success)throw Error(result.message||'Update Code.gs to load shared Admin settings.');
       this.applySharedResponse(result,actor);this.recalculateContractStatuses();this.notify();return {success:true,message:'Shared Admin settings loaded'};
@@ -246,18 +288,20 @@ class StorageService {
     const token=remoteSession(endpoint)?.token;
     if(!actor || !token)return {success:false,message:'Sign in to Sheets first.'};
     this.ensureAnnualBudgets();
+    if(this.recoveryFlight)return this.recoveryFlight;
     if(this.businessWriteFlight||this.getPendingBusinessWrite()&&!(replaceLocal&&this.hasUnsyncedBusinessData()))return {success:false,message:'Finish the pending Sheet save before loading data.'};
     const sequence=++this.sheetLoadSequence;
     const publish=(status:typeof this.sheetDataState.status,message:string,success=false)=>{
       if(sequence===this.sheetLoadSequence){this.sheetDataState={status,message};this.notify();}
       return {success,message};
     };
-    if(this.hasUnsyncedBusinessData()&&!replaceLocal)return publish('local','ມີຂໍ້ມູນໃນ browser ທີ່ຍັງບໍ່ Sync. ແອັບເກັບຂໍ້ມູນນີ້ໄວ້; ໃຫ້ Sync ຫຼືສຳຮອງກ່ອນໂຫຼດຈາກ Sheet.');
+    if(this.hasUnsyncedBusinessData())return this.recoverLegacyCache('LOAD_SHEET');
     const before=businessFingerprint(this.businessSnapshot());
     publish('loading','ກຳລັງໂຫຼດລູກຄ້າ ແລະງົບປະມານຈາກ Google Sheet…');
     try {
       const result=await accountRequest(endpoint,'GET_BUSINESS_DATA');
       if(sequence!==this.sheetLoadSequence)return {success:false,message:'Newer read started; old response ignored.'};
+      if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return publish('error','Login again after the database migration.');}
       if(this.currentUser?.id!==actor.id || this.settings.appsScriptUrl!==endpoint || remoteSession(endpoint)?.token!==token)return publish('error','Session changed. Please load from Sheet again.');
       if(!result.success || result.dataVersion!==1 || result.settingsVersion!==1){
         const error=result.message || result.error || '';
@@ -277,7 +321,7 @@ class StorageService {
       this.persistAll();
       this.recalculateContractStatuses();
       this.logAction('LOAD_FROM_SHEETS',`Loaded ${data.customers.length} customers from Sheet, scope ${scope}.`);
-      const migrated=typeof result.businessRevision==='string'&&this.migratePendingBusinessWrite(result.spreadsheetId||'',previousSheetId);
+      const migrated=typeof result.businessRevision==='string'&&this.migratePendingBusinessWrite(result.spreadsheetId||'',previousSheetId,result.migratedFromSpreadsheetId||'');
       const loaded=publish('loaded',`ໂຫຼດຈາກ Sheet ສຳເລັດ: ${data.customers.filter(customer=>customer.status!=='DELETED').length} ຮ້ານ (${scope}).`,true);
       if(migrated)await this.retryPendingBusinessWrite();
       return loaded;
@@ -480,6 +524,11 @@ class StorageService {
     return {success:result.success,message:result.message};
   }
 
+  public async backupDatabase():Promise<BusinessWriteResult>{
+    if(!this.canManageSettings())return {success:false,message:'Admin permission required'};
+    if(this.hasUnsyncedBusinessData()){const recovered=await this.recoverLegacyCache('MANUAL_BACKUP');if(!recovered.success)return recovered;}
+    const result=await accountRequest(this.settings.appsScriptUrl,'BACKUP_DATABASE');return {success:result.success,message:result.message||'Database backup failed',entityId:result.backupId};
+  }
   public hasRemoteUserSession() { return !!remoteSession(this.settings.appsScriptUrl); }
   private async remoteAccount(action: string, payload: Record<string, unknown> = {}, migratedLocalId?: string) {
     const result = await accountRequest(this.settings.appsScriptUrl,action,payload);
@@ -602,7 +651,7 @@ class StorageService {
     if (this.currentUser?.role !== 'ADMIN') {
       throw new Error('Only Admin can sync the complete database to Google Sheets.');
     }
-    if(this.getPendingBusinessWrite()||this.businessWriteFlight)throw Error('Finish the pending Sheet save before publishing a full snapshot.');
+    if(this.getPendingBusinessWrite()||this.businessWriteFlight||this.recoveryFlight)throw Error('Finish the pending Sheet save before publishing a full snapshot.');
     this.ensureAnnualBudgets();
     let revision;try{revision=JSON.parse(this.businessBaselineText||'null')?.revision;}catch{}
     if(this.settings.appsScriptUrl&&!revision)throw Error('Load the latest Sheet before full publication. Back up existing local edits first.');
@@ -1419,7 +1468,7 @@ class StorageService {
     importedCount: number;
     errors: string[];
   } {
-    if(this.getPendingBusinessWrite())return {success:false,importedCount:0,errors:['Finish the pending Sheet save first']};
+    if(this.getPendingBusinessWrite()||this.recoveryFlight)return {success:false,importedCount:0,errors:['Finish the pending Sheet save first']};
     if(!this.canManageSettings())return {success:false,importedCount:0,errors:['Admin permission required']};
     const lines = csvText.trim().split(/\r?\n/);
     if (lines.length < 2) {
@@ -1586,7 +1635,7 @@ class StorageService {
     importedCount: number;
     errors: string[];
   } {
-    if(this.getPendingBusinessWrite())return {success:false,importedCount:0,errors:['Finish the pending Sheet save first']};
+    if(this.getPendingBusinessWrite()||this.recoveryFlight)return {success:false,importedCount:0,errors:['Finish the pending Sheet save first']};
     if(!this.canManageSettings())return {success:false,importedCount:0,errors:['Admin permission required']};
     if (rows.length < 1) {
       return { success: false, importedCount: 0, errors: ['ໄຟລ໌ບໍ່ມີຂໍ້ມູນ (No rows found)'] };

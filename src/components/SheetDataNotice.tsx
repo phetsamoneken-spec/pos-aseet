@@ -28,6 +28,10 @@ export function SheetDataNotice(){
       {write.pending&&write.status!=='saving'&&<button type="button" onClick={()=>void storage.retryPendingBusinessWrite()} className="rounded-lg border px-3 py-2 font-semibold">{lang==='lo'?'ລອງບັນທຶກຊ້ຳ':'Retry save'}</button>}
       {write.status==='error'&&storage.getCurrentUser()?.role==='ADMIN'&&<a href="https://raw.githubusercontent.com/phetsamoneken-spec/foc-support/main/gas/Code.gs" target="_blank" rel="noreferrer" className="text-blue-700 underline">Code.gs</a>}
     </div>}
+    {storage.getLocalRecoveryBackup()&&<button type="button" className="mb-3 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold" onClick={()=>{
+      const data=storage.getLocalRecoveryBackup();if(!data)return;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`FOC-recovery-${data.id}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }}>{lang==='lo'?'ດາວໂຫຼດສຳຮອງຂໍ້ມູນເກົ່າ':'Download old data backup'}</button>}
     <div className={`mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-xs ${state.status==='error'||state.status==='local'?'border-amber-200 bg-amber-50 text-amber-900':'border-slate-200 bg-white text-slate-600'}`}>
     <p role={state.status==='error'?'alert':'status'} className="min-w-0 flex-1">{backupError || state.message || (lang==='lo'?'ຂໍ້ມູນລູກຄ້າຈາກ Google Sheet':'Customer data from Google Sheets')}</p>
     <button type="button" onClick={load} disabled={state.status==='loading'||write.status==='saving'||write.pending&&!storage.hasUnsyncedBusinessData()} className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 font-semibold disabled:opacity-50">

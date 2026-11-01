@@ -1,3 +1,5 @@
+> Version 2026.11.01.15 preserves accounts and bcrypt hashes when activating the prepared primary Sheet, requires a fresh login, adds Status/Updated At/Deleted At and change history, and includes USERS in database backups. Deleted users are retained as disabled DELETED records and excluded from active user lists. See DATABASE-CONTINUITY.md.
+
 > Admin-only import and shared settings: see [ADMIN-POLICY.md](ADMIN-POLICY.md). This release requires deploying the updated Code.gs.
 
 # User accounts stored in Google Sheets
@@ -21,7 +23,7 @@
 - Legacy browser passwords are sent only in the authenticated migration request and hashed by the server. After successful migration the cached user list is replaced with password-free records. Never edit the Password Hash column manually.
 - User account sync is separate from the existing business-data Sync button. Account changes are saved directly after backend sign-in.
 - On another device, open the same published FOC Support app and use the Sheet account credentials. The production build supplies the shared backend automatically, with no URL field on Sign In. Install this release’s Code.gs to enable authenticated customer/budget reads after login. See READ-FROM-SHEETS.md. Edits still need the manual Admin upload before other devices can read them.
-- This adds server authentication to **user-account endpoints**. Business publication now requires an Admin session; legacy transaction endpoints check the authenticated team. See ADMIN-POLICY.md for the remaining local-edit workflow.
+- This adds server authentication to **user-account endpoints**. Business publication now requires an Admin session; legacy transaction endpoints check the authenticated team. See DATABASE-CONTINUITY.md for automatic recovery of old browser edits and the current write workflow.
 
 ## Verification
 

@@ -21,6 +21,8 @@ import { storage } from '../services/storage';
 import { translations, Language } from '../locales/translations';
 import { Customer, Team, TEAMS, ContractStatus } from '../types';
 import { UploadExcelModal } from './UploadExcelModal';
+import { AddCustomerModal } from './AddCustomerModal';
+import { Pencil } from 'lucide-react';
 import { DeleteAllCustomersModal } from './DeleteAllCustomersModal';
 
 interface CustomersViewProps {
@@ -190,6 +192,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
     setTimeout(() => setFeedbackMsg(null), 4000);
   };
 
+  const [editingCode,setEditingCode]=useState<string|null>(null);
   const [deletingCode,setDeletingCode]=useState<string|null>(null);
   const handleDeleteCustomer = async (customer: Customer) => {
     if(deletingCode)return;
@@ -513,6 +516,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
                           >
                             <Plus className="w-4 h-4" />
                           </button>
+                          {storage.canEditCustomer(item.customer.team)&&<button type="button" title={lang==='lo'?'ແກ້ໄຂຮ້ານ':'Edit store'} aria-label={`Edit store ${item.customer.name}`} onClick={()=>setEditingCode(item.customer.code)} className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50"><Pencil className="h-4 w-4" /></button>}
                           {storage.canDeleteCustomer(item.customer.code) && <button
                             type="button"
                             onClick={() => handleDeleteCustomer(item.customer)}
@@ -576,6 +580,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
         />
       )}
 
+      {editingCode&&<AddCustomerModal initialCustomerCode={editingCode} onClose={()=>setEditingCode(null)} onSuccess={()=>{setEditingCode(null);showToast(lang==='lo'?'ແກ້ໄຂຮ້ານ ແລະບັນທຶກໄປ Sheet ແລ້ວ':'Store updated in Sheet');}} />}
       {/* Delete All Customers Modal */}
       {showDeleteAllModal && isAdmin && (
         <DeleteAllCustomersModal

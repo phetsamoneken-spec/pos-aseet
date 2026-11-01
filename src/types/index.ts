@@ -19,6 +19,9 @@ export interface User {
   isActive: boolean;
   createdAt: string;
   lastLogin?: string;
+  status?: 'ACTIVE'|'INACTIVE'|'DELETED';
+  updatedAt?:string;
+  deletedAt?:string;
 }
 
 export type ContractStatus = 'ACTIVE' | 'EXPIRING_SOON' | 'EXPIRED' | 'UPCOMING';
@@ -35,6 +38,8 @@ export interface Customer {
   province?: string;
   contactPerson?: string;
   status: 'ACTIVE' | 'INACTIVE' | 'DELETED';
+  updatedAt?:string;
+  deletedAt?:string;
   createdAt: string;
 }
 
@@ -55,6 +60,7 @@ export interface Contract {
   team: Team;
   commencingOn: string; // YYYY-MM-DD
   expiringOn: string; // YYYY-MM-DD
+  updatedAt?:string;
   cycleNumber: number; // 1, 2, 3...
   status: ContractStatus;
   notes?: string;

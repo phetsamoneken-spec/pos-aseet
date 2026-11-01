@@ -12,14 +12,20 @@ import { translations, Language } from '../locales/translations';
 import { Team, TEAMS } from '../types';
 
 interface AddCustomerModalProps {
+  initialCustomerCode?:string;
   onClose: () => void;
   onSuccess: () => void;
 }
 
 export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
+  initialCustomerCode,
   onClose,
   onSuccess
 }) => {
+  const editing=Boolean(initialCustomerCode),existing=initialCustomerCode?storage.getCustomerByCode(initialCustomerCode):undefined;
+  const previousCondition=initialCustomerCode?storage.getCustomerCondition(initialCustomerCode):undefined;
+  const previousContract=initialCustomerCode?storage.getActiveContract(initialCustomerCode):undefined;
+  const previousBudget=initialCustomerCode?storage.getBudgetForCustomer(initialCustomerCode):undefined;
   const currentUser = storage.getCurrentUser();
   const settings = storage.getSettings();
   const lang: Language = settings.language;
@@ -27,30 +33,30 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
 
   const isAdmin = currentUser?.role === 'ADMIN';
   const userTeam: Team = currentUser?.team && currentUser.team !== 'ALL' ? (currentUser.team as Team) : 'B1';
-  const [team, setTeam] = useState<Team>(userTeam);
-  const [code, setCode] = useState(`CUST-${userTeam}-${Date.now().toString().slice(-4)}`);
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [province, setProvince] = useState('ນະຄອນຫຼວງວຽງຈັນ (Vientiane Capital)');
-  const [address, setAddress] = useState('');
+  const [team, setTeam] = useState<Team>(existing?.team||userTeam);
+  const [code, setCode] = useState(existing?.code||`CUST-${userTeam}-${Date.now().toString().slice(-4)}`);
+  const [name, setName] = useState(existing?.name||'');
+  const [phone, setPhone] = useState(existing?.phone||'');
+  const [province, setProvince] = useState(existing?(existing.province||''):'ນະຄອນຫຼວງວຽງຈັນ (Vientiane Capital)');
+  const [address, setAddress] = useState(existing?.address||'');
 
   const pricePerCrate = settings.pricePerCrate || 240000;
 
   // Condition fields
-  const [conditionQty, setConditionQty] = useState<number>(125);
-  const [conditionUOM, setConditionUOM] = useState('Cartons');
-  const [conditionProductDescription, setConditionProductDescription] = useState('Beerlao Lager Can 330ml x 24');
+  const [conditionQty, setConditionQty] = useState<number>(previousCondition?.conditionQuantity??125);
+  const [conditionUOM, setConditionUOM] = useState(previousCondition?.conditionUOM||'Cartons');
+  const [conditionProductDescription, setConditionProductDescription] = useState(previousCondition?.conditionProductDescription||'Beerlao Lager Can 330ml x 24');
 
   // Contract & Budget
-  const [commencingOn, setCommencingOn] = useState('2026-01-01');
-  const [expiringOn, setExpiringOn] = useState('2026-12-31');
-  const [annualBudget, setAnnualBudget] = useState<number>(125 * pricePerCrate);
+  const [commencingOn, setCommencingOn] = useState(previousContract?.commencingOn||'2026-01-01');
+  const [expiringOn, setExpiringOn] = useState(previousContract?.expiringOn||'2026-12-31');
+  const [annualBudget, setAnnualBudget] = useState<number>(previousBudget?.annualAmount??125*pricePerCrate);
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleTeamChange = (newTeam: Team) => {
     setTeam(newTeam);
-    setCode(`CUST-${newTeam}-${Date.now().toString().slice(-4)}`);
+    if(!editing)setCode(`CUST-${newTeam}-${Date.now().toString().slice(-4)}`);
   };
 
   const handleQtyChange = (qty: number) => {
@@ -65,7 +71,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
     setErrorMessage(null);
 
     setIsSaving(true);
-    const res = await storage.commitBusinessChange('ADD_CUSTOMER',{
+    const payload:Record<string,unknown>={
       code,
       name,
       team,
@@ -78,7 +84,9 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
       phone,
       address,
       province
-    });
+    };
+    if(editing&&!isAdmin)for(const key of ['conditionQty','conditionUOM','conditionProductDescription','commencingOn','expiringOn','annualBudget'])delete payload[key];
+    const res=await storage.commitBusinessChange(editing?'UPDATE_CUSTOMER':'ADD_CUSTOMER',payload);
 
     setIsSaving(false);
     if (res.success) {
@@ -100,7 +108,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-white">
-                {lang === 'lo' ? 'ເພີ່ມຮ້ານໃໝ່ (Add Store / Customer)' : t.addNewCustomer}
+                {editing?(lang==='lo'?'ແກ້ໄຂຂໍ້ມູນຮ້ານ':'Edit store'):(lang === 'lo' ? 'ເພີ່ມຮ້ານໃໝ່ (Add Store / Customer)' : t.addNewCustomer)}
               </h3>
               <p className="text-[11px] text-slate-400">
                 {lang === 'lo' ? 'ເພີ່ມຂໍ້ມູນຮ້ານໃໝ່ພ້ອມເງື່ອນໄຂສິນຄ້າ ແລະ ຮອບສັນຍາ' : 'Register New Customer Account & Contract Conditions'}
@@ -161,6 +169,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
               <input
                 type="text"
                 required
+                readOnly={editing}
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -210,6 +219,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
                 <input
                   type="text"
                   required
+                  disabled={editing&&!isAdmin}
                   value={conditionProductDescription}
                   onChange={(e) => setConditionProductDescription(e.target.value)}
                   className="w-full p-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900"
@@ -224,7 +234,8 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
                   <input
                     type="number"
                     required
-                    min="1"
+                    min={editing?0:1}
+                    disabled={editing&&!isAdmin}
                     value={conditionQty}
                     onChange={(e) => handleQtyChange(Number(e.target.value))}
                     className="w-2/3 p-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
@@ -232,6 +243,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
                   <input
                     type="text"
                     required
+                    disabled={editing&&!isAdmin}
                     value={conditionUOM}
                     onChange={(e) => setConditionUOM(e.target.value)}
                     className="w-1/3 p-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900"
@@ -250,7 +262,8 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
               <input
                 type="date"
                 required
-                value={commencingOn}
+                readOnly={editing}
+                  value={commencingOn}
                 onChange={(e) => setCommencingOn(e.target.value)}
                 className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900"
               />
@@ -263,7 +276,8 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
               <input
                 type="date"
                 required
-                value={expiringOn}
+                readOnly={editing}
+                  value={expiringOn}
                 onChange={(e) => setExpiringOn(e.target.value)}
                 className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900"
               />
@@ -278,7 +292,8 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
                 required
                 min="0"
                 step="any"
-                value={annualBudget}
+                disabled={editing&&!isAdmin}
+                    value={annualBudget}
                 onChange={(e) => setAnnualBudget(Number(e.target.value))}
                 className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900"
               />

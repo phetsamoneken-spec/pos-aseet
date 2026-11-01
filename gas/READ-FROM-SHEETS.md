@@ -1,3 +1,5 @@
+> Version 2026.11.01.15 archives old local edits to BROWSER_RECOVERY before loading authoritative data. See DATABASE-CONTINUITY.md for the prepared primary database migration and user-inclusive backups.
+
 > Version 2026.11.01.13: normal add/delete/expense/budget forms save automatically through MUTATE_BUSINESS. Full Excel publication uses a server revision check. See [AUTO-SAVE.md](AUTO-SAVE.md).
 
 > Admin-only import and shared settings: see [ADMIN-POLICY.md](ADMIN-POLICY.md). This release requires deploying the updated Code.gs.

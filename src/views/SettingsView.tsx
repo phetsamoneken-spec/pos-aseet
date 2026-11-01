@@ -58,7 +58,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
       setSaveFeedback({
         success: result.persisted,
         message: result.persisted
-          ? (lang === 'lo' ? 'ບັນທຶກການຕັ້ງຄ່າໃນ browser ສຳເລັດແລ້ວ. ຖ້າຕ້ອງການສົ່ງຂໍ້ມູນໄປ Sheet ໃຫ້ກົດ “Sync ໄປ Google Sheets”.' : 'Settings saved in this browser. To send your records to Sheets, click “Sync to Google Sheets”.')
+          ? (lang === 'lo' ? 'ກຳລັງກຽມບັນທຶກຄ່າໄປ Sheet…' : 'Preparing to publish settings to Sheet…')
           : (lang === 'lo' ? 'browser ບໍ່ສາມາດເກັບຄ່າຖາວອນໄດ້. ຄ່າມີຜົນໃນໜ້ານີ້ ແຕ່ອາດຫາຍເມື່ອ Refresh; ກະລຸນາອະນຸຍາດ Site storage.' : 'Your browser could not persist the settings. They apply to this session but may be lost on refresh; allow site storage.')
       });
       return true;
@@ -458,6 +458,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
             <p className="text-xs text-slate-600">{lang === 'lo' ? 'Sync ດ້ວຍຕົນເອງ: ລູກຄ້າ, ເງື່ອນໄຂ, ສັນຍາ, ງົບປະມານ, ລາຍຈ່າຍ, ປະຫວັດ ແລະຄ່າທີ່ບັນທຶກແລ້ວ. ອັບເດດຕາມ ID ໂດຍບໍ່ລຶບແຖວເກົ່າ; ຖ້າຕ້ອງການດຶງຂໍ້ມູນກັບ ໃຫ້ກົດ “ໂຫຼດຈາກ Sheet” ດ້ານເທິງ.' : 'Manual app-to-Sheets sync of customers, conditions, contracts, budgets, transactions, logs and saved settings. Updates by ID, preserves other rows, and sends this browser’s changes to Sheets. Use “Load from Sheet” above to import the latest Sheet data.'}</p>
             <div className="flex flex-wrap gap-2">
               <a href="./Code.gs" download="Code.gs" className="px-4 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-700">{lang === 'lo' ? 'ດາວໂຫຼດ Code.gs (ໄຟລ໌ດຽວ)' : 'Download unified Code.gs'}</a>
+              <button type="button" disabled={syncingSheets} onClick={async()=>{setSyncingSheets(true);try{setSyncResult(await storage.backupDatabase());}finally{setSyncingSheets(false);}}} className="px-4 py-2 rounded-xl border border-blue-300 text-blue-800 text-xs font-bold disabled:opacity-50">{lang==='lo'?'ສຳຮອງຂໍ້ມູນທັງໝົດ ລວມ User':'Back up all data including users'}</button>
               <button type="button" onClick={handleSyncToSheets} disabled={syncingSheets || !formData.appsScriptUrl.trim()} className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold disabled:opacity-50 flex items-center gap-2 cursor-pointer">
                 <RefreshCw className={`w-4 h-4 ${syncingSheets ? 'animate-spin' : ''}`} />
                 {syncingSheets ? (lang === 'lo' ? 'ກຳລັງ Sync…' : 'Syncing…') : (lang === 'lo' ? 'Sync ໄປ Google Sheets' : 'Sync to Google Sheets')}

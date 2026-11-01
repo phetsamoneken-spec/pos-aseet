@@ -14,9 +14,9 @@ const SPREADSHEET_ID = "";
 // Install this Code.gs ONLY. It includes initializeDatabase() and importExistingCustomerData().
 // Full sync is a revision-guarded Admin upsert. Normal edits use MUTATE_BUSINESS; historical records are retained.
 const SYNC_TABLES = [
-  ['customers', 'CUSTOMERS', ['Customer Code','Customer Name','Team','MDE','Phone','Address','Province','Status','Created At','Contact Person'], ['code','name','team','mde','phone','address','province','status','createdAt','contactPerson']],
+  ['customers', 'CUSTOMERS', ['Customer Code','Customer Name','Team','MDE','Phone','Address','Province','Status','Created At','Contact Person','Updated At','Deleted At'], ['code','name','team','mde','phone','address','province','status','createdAt','contactPerson','updatedAt','deletedAt']],
   ['conditions', 'CUSTOMER_CONDITIONS', ['ID','Customer Code','Condition Quantity','Condition UOM','Product Description','Updated At','Price per Unit'], ['id','customerCode','conditionQuantity','conditionUOM','conditionProductDescription','updatedAt','pricePerUnit']],
-  ['contracts', 'CONTRACTS', ['Contract ID','Customer Code','Customer Name','Team','Commencing On','Expiring On','Cycle Number','Status','Notes','Created At'], ['id','customerCode','customerName','team','commencingOn','expiringOn','cycleNumber','status','notes','createdAt']],
+  ['contracts', 'CONTRACTS', ['Contract ID','Customer Code','Customer Name','Team','Commencing On','Expiring On','Cycle Number','Status','Notes','Created At','Updated At'], ['id','customerCode','customerName','team','commencingOn','expiringOn','cycleNumber','status','notes','createdAt','updatedAt']],
   ['budgets', 'BUDGETS', ['Budget ID','Contract ID','Customer Code','Team','Annual Amount','Total Used','Remaining Amount','Utilization (%)','Status','Allow Exception','Exception Reason','Updated At','Budget Year','Period Start','Period End','Legacy Undated Used'], ['id','contractId','customerCode','team','annualAmount','totalUsed','remainingAmount','utilizationPercentage','status','allowException','exceptionReason','updatedAt','periodNumber','periodStart','periodEnd','unallocatedUsed']],
   ['transactions', 'BUDGET_TRANSACTIONS', ['Transaction ID','Date','Customer Code','Customer Name','Team','Contract ID','Budget ID','Category','Description','Amount','Invoice Ref','Created By','Created At','Status','Cancellation Reason','Cancelled By','Cancelled At'], ['id','date','customerCode','customerName','team','contractId','budgetId','category','description','amount','invoiceRef','createdBy','createdAt','status','cancellationReason','cancelledBy','cancelledAt']],
   ['logs', 'ACTIVITY_LOG', ['Log ID','Timestamp','User','Role','Team','Action','Details'], ['id','timestamp','user','role','team','action','details']],
@@ -120,22 +120,23 @@ function handleBulkSync(p) {
 }
 
 function getSpreadsheet() {
-  const configured = String(PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID') || SPREADSHEET_ID).trim();
-  if (configured && configured !== 'YOUR_SPREADSHEET_ID') {
-    const urlMatch = configured.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
-    const id = urlMatch ? urlMatch[1] : configured;
-    if (!/^[A-Za-z0-9_-]{20,}$/.test(id)) throw new Error('Invalid SPREADSHEET_ID in Script Properties. Use the ID between /d/ and /edit in the Sheet URL.');
-    return SpreadsheetApp.openById(id);
-  }
-  const active = SpreadsheetApp.getActiveSpreadsheet();
-  if (active) return active;
-  throw new Error('Set SPREADSHEET_ID in Apps Script > Project Settings > Script Properties, then run initializeDatabase() and deploy a new Web App version.');
+  if(spreadsheetCache_)return spreadsheetCache_;
+  const configured=String(PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')||SPREADSHEET_ID).trim();
+  let source;
+  if(configured&&configured!=='YOUR_SPREADSHEET_ID'){
+    const match=configured.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/),id=match?match[1]:configured;
+    if(!/^[A-Za-z0-9_-]{20,}$/.test(id))throw new Error('Invalid SPREADSHEET_ID in Script Properties.');
+    source=SpreadsheetApp.openById(id);
+  }else source=SpreadsheetApp.getActiveSpreadsheet();
+  if(!source)throw new Error('Set SPREADSHEET_ID in Script Properties, then deploy the Web App.');
+  spreadsheetCache_=resolvePrimaryDatabase_(source);return spreadsheetCache_;
 }
 
 /**
  * Handle HTTP GET Requests
  */
 function doGet(e) {
+  spreadsheetCache_=null;
   try {
     const action = (e && e.parameter && e.parameter.action) || "ping";
 
@@ -162,10 +163,12 @@ function doGet(e) {
  * Handle HTTP POST Requests with Concurrency Lock
  */
 function doPost(e) {
+  spreadsheetCache_=null;
   const lock = LockService.getScriptLock();
   try {
     // Wait up to 10 seconds to prevent concurrent write collisions
     lock.waitLock(10000);
+    databaseLockHeld_=true;
 
     let postData = {};
     if (e && e.postData && e.postData.contents) {
@@ -176,12 +179,14 @@ function doPost(e) {
 
     const action = postData.action;
     const payload = postData.payload || {};
+    if(action==='SAVE_BROWSER_RECOVERY')return jsonResponse(saveBrowserRecovery_(payload,postData.authToken));
+    if(action==='BACKUP_DATABASE'){const ss=userTables_(),actor=requireSession_(ss,postData.authToken,true),id='MANUAL-'+Utilities.getUuid(),tables={};CORE_DATABASE_SHEETS_.forEach(function(name){const sheet=ss.getSheetByName(name);if(sheet)tables[name]=backupValues_(sheet);});storeArchive_(ss,'DATABASE_BACKUPS',id,actor,'ADMIN_MANUAL',{version:1,spreadsheetId:ss.getId(),tables:tables,excluded:['SESSIONS']});return jsonResponse({success:true,backupId:id,spreadsheetId:ss.getId(),message:'All database tables and users backed up; sessions excluded.'});}
     if(action==='MUTATE_BUSINESS')return jsonResponse(mutateBusiness_(payload,postData.authToken));
     if(['GET_BUSINESS_DATA','SYNC_BULK_DATA','ADD_TRANSACTION','CANCEL_TRANSACTION','NEW_CONTRACT_CYCLE','UPDATE_BUDGET'].indexOf(action)>=0){requireSession_(userTables_(),postData.authToken,false);recoverBusinessWrites_();}
     if (action === 'GET_BUSINESS_DATA') return jsonResponse(readBusinessData_(postData.authToken));
     if (action === 'GET_SHARED_SETTINGS') { const ss=userTables_(),actor=requireSession_(ss,postData.authToken,false);return jsonResponse({success:true,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor)}); }
     if (action === 'SAVE_SHARED_SETTINGS') return jsonResponse(saveSharedSettings_(payload,postData.authToken));
-    if (action === 'SYNC_BULK_DATA') {requireSession_(userTables_(),postData.authToken,true);if(payload.expectedBusinessRevision!==readBusinessData_(postData.authToken).businessRevision)return jsonResponse({success:false,message:'Sheet changed on another device. Back up local edits, load the latest Sheet and retry.'});}
+    if (action === 'SYNC_BULK_DATA') {if(payload.settingsRows!==undefined)throw new Error('Use the allowlisted settings object; database routing is owner-controlled.');requireSession_(userTables_(),postData.authToken,true);if(payload.expectedBusinessRevision!==readBusinessData_(postData.authToken).businessRevision)return jsonResponse({success:false,message:'Sheet changed on another device. Back up local edits, load the latest Sheet and retry.'});}
     if (action==='ADD_TRANSACTION'||action==='CANCEL_TRANSACTION') return jsonResponse(handleAnnualTransaction_(action,payload,postData.authToken));
     if (['NEW_CONTRACT_CYCLE','UPDATE_BUDGET'].indexOf(action)>=0) authorizeLegacyBusiness_(action,payload,postData.authToken);
     const userActions = ['AUTH_LOGIN','AUTH_ME','AUTH_LOGOUT','GET_USERS','SYNC_USERS','ADD_USER','UPDATE_USER','RESET_USER_PASSWORD','DELETE_USER','UPDATE_PROFILE'];
@@ -203,8 +208,9 @@ function doPost(e) {
         result = handleUpdateBudget(payload);
         break;
       case "SYNC_BULK_DATA":
-        result = handleBulkSync(payload);
-        if(result.success)result.businessRevision=readBusinessData_(postData.authToken).businessRevision;
+        {const ss=userTables_(),actor=requireSession_(ss,postData.authToken,true),before=readBusinessData_(postData.authToken).snapshot;ensureDailyDatabaseBackup_(ss,actor);
+        result=handleBulkSync(payload);
+        if(result.success){const read=readBusinessData_(postData.authToken);result.businessRevision=read.businessRevision;appendChangeHistory_(ss,'BULK-'+Utilities.getUuid(),actor,'SYNC_BULK_DATA',businessChanges_(before,read.snapshot));}}
         break;
       default:
         result = { success: false, message: "Unsupported action: " + action };
@@ -215,6 +221,7 @@ function doPost(e) {
     return jsonResponse({ success: false, error: err.toString() });
   } finally {
     if (lock.hasLock()) lock.releaseLock();
+    databaseLockHeld_=false;
   }
 }
 
@@ -613,7 +620,7 @@ function importExistingCustomerData() {
 function userTables_() {
   const ss = getSpreadsheet();
   const specs = [
-    ['USERS', ['User ID','Username','Password Hash','Full Name','Email','Role','Assigned Team','Is Active','Created At','Last Login']],
+    ['USERS', ['User ID','Username','Password Hash','Full Name','Email','Role','Assigned Team','Is Active','Created At','Last Login','Status','Updated At','Deleted At']],
     ['SESSIONS', ['Session ID','Username','Token','Expires At','Created At','User ID','Password Version']]
   ];
   specs.forEach(function(spec) {
@@ -625,6 +632,7 @@ function userTables_() {
       sheet.getRange(1,1,1,spec[1].length).setValues([spec[1]]);
     }
   });
+  const users=ss.getSheetByName('USERS');if(users.getLastRow()>1){const rows=users.getDataRange().getValues().slice(1);if(rows.some(function(row){return !row[10];}))users.getRange(2,11,rows.length,1).setValues(rows.map(function(row){return [row[10]||(row[7]===true||row[7]==='TRUE'?'ACTIVE':'INACTIVE')];}));}
   return ss;
 }
 function digest_(text) {
@@ -638,15 +646,20 @@ function hashPassword_(password) {
   return bcrypt.hashSync(password, 10);
 }
 function publicUser_(row) {
-  return { id:String(row[0]), username:String(row[1]), fullName:String(row[3] || ''), email:String(row[4] || ''), role:row[5], team:row[6], isActive:row[7] === true || row[7] === 'TRUE', createdAt:String(row[8] || ''), lastLogin:String(row[9] || '') };
+  return { id:String(row[0]), username:String(row[1]), fullName:String(row[3] || ''), email:String(row[4] || ''), role:row[5], team:row[6], isActive:row[7] === true || row[7] === 'TRUE', createdAt:String(row[8] || ''), lastLogin:String(row[9] || ''),status:String(row[10]||(row[7]===true?'ACTIVE':'INACTIVE')),updatedAt:String(row[11]||''),deletedAt:String(row[12]||'') };
 }
-function userRows_(ss) { return ss.getSheetByName('USERS').getDataRange().getValues().slice(1).filter(function(r) { return r[0]; }); }
+function userRows_(ss) { return ss.getSheetByName('USERS').getDataRange().getValues().slice(1).filter(function(r) { return r[0]&&r[10]!=='DELETED'; }); }
 function findUser_(ss, id) { return userRows_(ss).find(function(r) { return String(r[0]) === String(id); }); }
-function writeUser_(ss, row) {
-  const sheet = ss.getSheetByName('USERS'), rows = sheet.getDataRange().getValues();
-  const index = rows.findIndex(function(r,i) { return i > 0 && String(r[0]) === String(row[0]); });
-  if (index < 0) sheet.appendRow(row); else sheet.getRange(index+1,1,1,10).setValues([row]);
+function writeUser_(ss,row,actorLabel,eventAction) {
+  const sheet=ss.getSheetByName('USERS'),rows=sheet.getDataRange().getValues(),index=rows.findIndex(function(r,i){return i>0&&String(r[0])===String(row[0]);});
+  const previous=index<0?null:rows[index];
+  row=row.slice(0,13);while(row.length<13)row.push('');
+  row[10]=row[10]==='DELETED'?'DELETED':row[7]===true?'ACTIVE':'INACTIVE';row[11]=eventAction==='LOGIN'?(previous&&previous[11]||''):new Date().toISOString();
+  const actor=[String(row[0]),actorLabel||'system'];ensureDailyDatabaseBackup_(ss,actor);
+  if(index<0)sheet.appendRow(row);else sheet.getRange(index+1,1,1,13).setValues([row]);
+  appendChangeHistory_(ss,'USER-'+Utilities.getUuid(),actor,eventAction||(row[10]==='DELETED'?'DELETE_USER':index<0?'ADD_USER':'UPDATE_USER'),[{table:'USERS',id:String(row[0]),before:previous,after:row}]);
 }
+
 function userSession_(ss, row) {
   const token = newToken_(), now = new Date(), expiresAt = new Date(now.getTime()+4*60*60*1000).toISOString();
   ss.getSheetByName('SESSIONS').appendRow([Utilities.getUuid(), row[1], digest_(token), expiresAt, now.toISOString(), row[0], digest_(row[2])]);
@@ -703,8 +716,8 @@ function saveRemoteUser_(ss, data, existing, actor, selfOnly) {
   if (actor[0] === row[0] && (row[5] !== 'ADMIN' && actor[5] === 'ADMIN' || row[7] !== true)) throw new Error('Cannot disable or demote your current account');
   if (data.password !== undefined && data.password !== '') row[2] = hashPassword_(data.password);
   if (!/^\$2[aby]\$/.test(String(row[2]))) throw new Error('Set a new password for this user');
-  writeUser_(ss,row);
-  return row;
+  writeUser_(ss,row,actor[1],selfOnly?'UPDATE_PROFILE':!existing?'ADD_USER':data.password?'RESET_USER_PASSWORD':'UPDATE_USER');
+  return findUser_(ss,row[0])||row;
 }
 function handleUserAction_(action, p, token) {
   const ss = userTables_();
@@ -715,7 +728,7 @@ function handleUserAction_(action, p, token) {
     cache.put(key,String(attempts+1),600);
     const row = userRows_(ss).find(function(r) { return String(r[1]).toLowerCase() === username; });
     if (!row || !publicUser_(row).isActive || !/^\$2[aby]\$/.test(String(row[2])) || !bcrypt.compareSync(password,String(row[2]))) throw new Error('Incorrect username/password, disabled account, or backend setup not completed.');
-    cache.remove(key); row[9] = new Date().toISOString(); writeUser_(ss,row);
+    cache.remove(key); row[9] = new Date().toISOString(); writeUser_(ss,row,row[1],'LOGIN');
     return { success:true, ...userSession_(ss,row) };
   }
   const actor = requireSession_(ss,token,false), isAdmin = actor[5] === 'ADMIN';
@@ -752,8 +765,7 @@ function handleUserAction_(action, p, token) {
   } else if (action === 'DELETE_USER') {
     if (!existing) throw new Error('User not found');
     if (existing[0]===actor[0]) throw new Error('Cannot delete your current account');
-    const sheet=ss.getSheetByName('USERS'),rows=sheet.getDataRange().getValues();
-    const index=rows.findIndex(function(r,i){return i>0 && r[0]===existing[0];}); sheet.deleteRow(index+1);
+    const deleted=existing.slice();deleted[7]=false;deleted[10]='DELETED';deleted[12]=new Date().toISOString();writeUser_(ss,deleted,actor[1]);
   } else throw new Error('Unknown user action');
   return {success:true,users:userRows_(ss).map(publicUser_),...userSession_(ss,findUser_(ss,actor[0])),message:'User saved to USERS. Passwords stored as bcrypt hashes.'};
 }
@@ -2064,7 +2076,7 @@ function readBusinessData_(token) {
   snapshot.transactions.forEach(function(row){row.status=row.status || 'ACTIVE';});
   const annual=projectAnnualBudgets(snapshot.contracts,snapshot.budgets,snapshot.transactions);
   snapshot.budgets=annual.budgets;snapshot.transactions=annual.transactions;
-  return {success:true,businessRevision:digest_(JSON.stringify(snapshot)),annualBudgetVersion:1,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
+  return {success:true,migratedFromSpreadsheetId:databaseSetting_(ss,'migrationSourceId'),businessRevision:digest_(JSON.stringify(snapshot)),annualBudgetVersion:1,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
 }
 
 
@@ -2092,11 +2104,12 @@ function readSharedSettings_(ss){
  return normalizeSharedSettings_(raw);
 }
 function saveSharedSettings_(payload,token){
- const ss=userTables_();requireSession_(ss,token,true);
- const settings=normalizeSharedSettings_(payload.settings),result=handleBulkSync({settings:settings});
- if(!result.success)return result;
- return {success:true,settingsVersion:1,settings:readSharedSettings_(ss),message:'Admin settings published to the shared Sheet.'};
+ const ss=userTables_(),actor=requireSession_(ss,token,true),before=readSharedSettings_(ss);ensureDailyDatabaseBackup_(ss,actor);
+ const settings=normalizeSharedSettings_(payload.settings),result=handleBulkSync({settings:settings});if(!result.success)return result;
+ const after=readSharedSettings_(ss);if(JSON.stringify(before)!==JSON.stringify(after))appendChangeHistory_(ss,'SETTINGS-'+Utilities.getUuid(),actor,'UPDATE_SETTINGS',[{table:'SETTINGS',id:'COMMON',before:before,after:after}]);
+ return {success:true,settingsVersion:1,settings:after,message:'Admin settings published to the shared Sheet.'};
 }
+
 function authorizeLegacyBusiness_(action,payload,token){
  const ss=userTables_(),actor=requireSession_(ss,token,action==='NEW_CONTRACT_CYCLE'||action==='UPDATE_BUDGET');
  if(actor[5]==='ADMIN')return;
@@ -2284,6 +2297,7 @@ function replayBusinessWrite_(sheet,parts){
  if(digest_(text)!==first[3])throw new Error('APP_WRITES checksum mismatch; contact Admin');
  const plan=JSON.parse(text),result=handleBulkSync(plan.tables);
  if(!result.success)throw new Error(result.error||result.message||'Sheet write incomplete; retry the same operation');
+ if(plan.changes)appendChangeHistory_(getSpreadsheet(),String(first[0]),plan.actor||[String(first[1]),'user'],plan.action||'WRITE',plan.changes);
  parts.forEach(function(part){sheet.getRange(part.index,5).setValue('DONE');});SpreadsheetApp.flush();
 }
 function recoverBusinessWrites_(){
@@ -2297,6 +2311,7 @@ function writePatch_(snapshot,codes){
  const set=new Set(codes),patch={};['customers','conditions','contracts','budgets','transactions'].forEach(function(key){patch[key]=snapshot[key].filter(function(row){return set.has(key==='customers'?row.code:row.customerCode);});});return patch;
 }
 function buildBusinessWrite_(kind,p,actor,snapshot,id){
+ const original=JSON.parse(JSON.stringify(snapshot));
  const admin=actor[5]==='ADMIN',now=new Date().toISOString(),tables={},codes=[],result={};
  function requireAdmin(){if(!admin)throw new Error('Admin permission required');}
  function customer(code){const c=snapshot.customers.find(function(c){return c.code===code;});if(!c||c.status==='DELETED')throw new Error('Customer not found or deleted');return c;}
@@ -2307,16 +2322,29 @@ function buildBusinessWrite_(kind,p,actor,snapshot,id){
   // Check the whole ID namespace without returning another team's records.
   const sheet=getSpreadsheet().getSheetByName('CUSTOMERS'),rows=sheet?sheet.getDataRange().getValues():[];
   if(rows.slice(1).some(function(r){return String(r[0]).trim().toUpperCase()===code;}))throw new Error('Duplicate Customer Code');
-  const c={code:code,name:name,team:team,mde:'MDE-'+team,phone:String(p.phone||''),address:String(p.address||''),province:String(p.province||''),status:'ACTIVE',createdAt:businessToday()};
+  const c={code:code,name:name,team:team,mde:'MDE-'+team,phone:String(p.phone||''),address:String(p.address||''),province:String(p.province||''),status:'ACTIVE',createdAt:businessToday(),updatedAt:now,deletedAt:''};
   const quantity=writeNumber_(p.conditionQty,'condition quantity'),price=readSharedSettings_(getSpreadsheet()).pricePerCrate||240000;
   const amount=admin?writeNumber_(p.annualBudget,'annual budget'):quantity*price;
-  const contract={id:'CNT-'+id,customerCode:code,customerName:name,team:team,commencingOn:p.commencingOn,expiringOn:p.expiringOn,cycleNumber:1,status:'ACTIVE',createdAt:now};
+  const contract={id:'CNT-'+id,customerCode:code,customerName:name,team:team,commencingOn:p.commencingOn,expiringOn:p.expiringOn,cycleNumber:1,status:'ACTIVE',createdAt:now,updatedAt:now};
   const annual=projectAnnualBudgets([contract],[budgetRow(contract,amount)],[]);
   tables.customers=[c];tables.conditions=[{id:'CND-'+id,customerCode:code,conditionQuantity:quantity,conditionUOM:String(p.conditionUOM||'CAS'),conditionProductDescription:String(p.conditionProductDescription||''),pricePerUnit:price,updatedAt:now}];tables.contracts=[contract];tables.budgets=annual.budgets;codes.push(code);result.entityId=code;
+ }else if(kind==='UPDATE_CUSTOMER'){
+  const code=String(p.code),c=customer(code),team=String(p.team||c.team);if(!/^B[1-7]$/.test(team)||!admin&&team!==c.team)throw new Error('Permission denied for this team');
+  const condition=snapshot.conditions.find(function(row){return row.customerCode===code;});
+  const contracts=snapshot.contracts.filter(function(row){return row.customerCode===code;}).sort(function(a,b){return b.cycleNumber-a.cycleNumber;});
+  const contract=contracts.find(function(row){return businessToday()>=row.commencingOn&&businessToday()<=row.expiringOn;})||contracts[0];
+  const current=contract&&selectAnnualBudget(snapshot.budgets.filter(function(b){return b.contractId===contract.id;}));
+  if(contract&&(p.commencingOn!==undefined&&p.commencingOn!==contract.commencingOn||p.expiringOn!==undefined&&p.expiringOn!==contract.expiringOn))throw new Error('Use contract renewal to change contract dates');
+  if(!admin&&condition&&(p.conditionQty!==undefined&&Number(p.conditionQty)!==condition.conditionQuantity||p.conditionProductDescription!==undefined&&p.conditionProductDescription!==condition.conditionProductDescription||p.conditionUOM!==undefined&&p.conditionUOM!==condition.conditionUOM||p.annualBudget!==undefined&&current&&Number(p.annualBudget)!==current.annualAmount))throw new Error('Only Admin can change contract conditions or budgets');
+  tables.customers=[Object.assign({},c,{name:writeText_(p.name,'customer name',300),team:team,mde:'MDE-'+team,phone:String(p.phone||''),address:String(p.address||''),province:String(p.province||''),updatedAt:now})];
+  if(condition){const updated=Object.assign({},condition,{updatedAt:now});if(admin){if(p.conditionQty!==undefined)updated.conditionQuantity=writeNumber_(p.conditionQty,'condition quantity');if(p.conditionUOM!==undefined)updated.conditionUOM=String(p.conditionUOM);if(p.conditionProductDescription!==undefined)updated.conditionProductDescription=String(p.conditionProductDescription);}tables.conditions=[updated];}
+  tables.contracts=contracts.map(function(row){return Object.assign({},row,{customerName:tables.customers[0].name,team:team,updatedAt:now});});
+  tables.budgets=snapshot.budgets.filter(function(b){return b.customerCode===code;}).map(function(b){b.team=team;if(admin&&current&&p.annualBudget!==undefined&&b.contractId===current.contractId&&(b.periodNumber||1)>=(current.periodNumber||1)){b.annualAmount=writeNumber_(p.annualBudget,'annual budget');b.updatedAt=now;refreshBudgetTotals(b);}return b;});
+  tables.transactions=snapshot.transactions.filter(function(t){return t.customerCode===code;}).map(function(t){return Object.assign({},t,{customerName:tables.customers[0].name,team:team});});codes.push(code);result.entityId=code;
  }else if(kind==='DELETE_CUSTOMER'){
-  const code=String(p.customerCode),c=customer(code);tables.customers=[Object.assign({},c,{status:'DELETED'})];codes.push(code);result.entityId=code;
+  const code=String(p.customerCode),c=customer(code);tables.customers=[Object.assign({},c,{status:'DELETED',updatedAt:now,deletedAt:now})];codes.push(code);result.entityId=code;
  }else if(kind==='DELETE_ALL_CUSTOMERS'){
-  requireAdmin();tables.customers=snapshot.customers.map(function(c){codes.push(c.code);return Object.assign({},c,{status:'DELETED'});});
+  requireAdmin();tables.customers=snapshot.customers.map(function(c){codes.push(c.code);return Object.assign({},c,{status:'DELETED',updatedAt:now,deletedAt:now});});
  }else if(kind==='ADD_TRANSACTION'){
   const code=String(p.customerCode),c=customer(code),date=p.date||businessToday(),amount=writeNumber_(p.amount,'transaction amount');
   if(!isCalendarDate(date)||amount<=0)throw new Error('Invalid transaction date or amount');
@@ -2340,7 +2368,7 @@ function buildBusinessWrite_(kind,p,actor,snapshot,id){
   requireAdmin();const code=String(p.customerCode),c=customer(code);writeDates_(p);
   if(snapshot.contracts.some(function(contract){return contract.customerCode===code&&p.commencingOn<=contract.expiringOn&&p.expiringOn>=contract.commencingOn;}))throw new Error('Contract dates overlap an existing cycle');
   const cycle=snapshot.contracts.filter(function(contract){return contract.customerCode===code;}).reduce(function(max,c){return Math.max(max,c.cycleNumber);},0)+1;
-  const contract={id:'CNT-'+id,customerCode:code,customerName:c.name,team:c.team,commencingOn:p.commencingOn,expiringOn:p.expiringOn,cycleNumber:cycle,status:'ACTIVE',notes:String(p.notes||''),createdAt:now};
+  const contract={id:'CNT-'+id,customerCode:code,customerName:c.name,team:c.team,commencingOn:p.commencingOn,expiringOn:p.expiringOn,cycleNumber:cycle,status:'ACTIVE',notes:String(p.notes||''),createdAt:now,updatedAt:now};
   tables.contracts=[contract];tables.budgets=projectAnnualBudgets([contract],[budgetRow(contract,writeNumber_(p.annualBudget,'annual budget'))],[]).budgets;codes.push(code);result.entityId=contract.id;
  }else if(kind==='UPDATE_BUDGET'){
   requireAdmin();const budget=snapshot.budgets.find(function(b){return b.id===p.budgetId;});if(!budget)throw new Error('Budget not found');customer(budget.customerCode);
@@ -2362,10 +2390,10 @@ function buildBusinessWrite_(kind,p,actor,snapshot,id){
  tables.logs=[{id:'LOG-'+id,timestamp:now,user:actor[1],role:actor[5],team:admin?'ALL':actor[6],action:kind,details:codes.join(', ')}];
  // Validate all affected tables before recording a recoverable plan.
  SYNC_TABLES.filter(function(table){return tables[table[0]]!==undefined;}).forEach(function(table){planSyncTable_(getSpreadsheet(),table,tables[table[0]]);});
- return {tables:tables,codes:codes,result:result};
+ return {tables:tables,codes:codes,result:result,actor:[String(actor[0]),String(actor[1])],action:kind,changes:businessChanges_(original,tables)};
 }
 function mutateBusiness_(payload,token){
- const ss=userTables_(),actor=requireSession_(ss,token,false);recoverBusinessWrites_();
+ const ss=userTables_(),actor=requireSession_(ss,token,false);recoverBusinessWrites_();ensureDailyDatabaseBackup_(ss,actor);
  const id=String(payload.id||''),kind=String(payload.kind||''),data=payload.data;
  if(!/^OP-[A-Za-z0-9-]{8,100}$/.test(id)||!data||typeof data!=='object'||Array.isArray(data))throw new Error('Invalid business write request');
  const sheet=writeJournal_(),hash=digest_(JSON.stringify({kind:kind,data:data}));let parts=journalOperations_(sheet).get(id);
@@ -2381,4 +2409,80 @@ function mutateBusiness_(payload,token){
  const planText=parts.slice().sort(function(a,b){return a.row[5]-b.row[5];}).map(function(p){return p.row[7];}).join(''),plan=JSON.parse(planText),read=readBusinessData_(token);
  const patch=writePatch_(read.snapshot,plan.codes);
  return {success:true,writeVersion:1,mutationId:id,scope:read.scope,user:read.user,customerCodes:plan.codes,patch:patch,snapshot:read.snapshot,businessRevision:read.businessRevision,entityId:plan.result.entityId,message:'Saved to Google Sheet'};
+}
+
+
+// The primary database is selected by private Script Properties and an owner-
+// controlled SETTINGS routing row. No private spreadsheet ID is shipped in Git.
+const CORE_DATABASE_SHEETS_=['CUSTOMERS','CUSTOMER_CONDITIONS','CONTRACTS','BUDGETS','BUDGET_TRANSACTIONS','USERS','CATEGORIES','ACTIVITY_LOG','SETTINGS','MKT_MASTER'];
+let spreadsheetCache_=null;
+let databaseLockHeld_=false;
+function databaseSetting_(ss,key){const s=ss.getSheetByName('SETTINGS');if(!s)return '';const rows=s.getDataRange().getValues();const row=rows.slice(1).find(function(r){return r[0]===key;});return row?String(row[1]):'';}
+function setDatabaseSetting_(ss,key,value){let s=ss.getSheetByName('SETTINGS');if(!s){s=ss.insertSheet('SETTINGS');s.appendRow(['Setting Key','Setting Value','Description','Updated At']);}const rows=s.getDataRange().getValues(),index=rows.findIndex(function(r,i){return i>0&&r[0]===key;});const row=[key,value,'Database routing / migration',new Date().toISOString()];if(index<0)s.appendRow(row);else s.getRange(index+1,1,1,4).setValues([row]);}
+function retireLegacyDatabaseAccess_(source){
+ if(databaseSetting_(source,'legacyAccessRetired')==='true')return;
+ const users=source.getSheetByName('USERS');if(users&&users.getLastRow()>1)users.getRange(2,8,users.getLastRow()-1,1).setValues(Array.from({length:users.getLastRow()-1},function(){return [false];}));
+ const sessions=source.getSheetByName('SESSIONS');if(sessions&&sessions.getLastRow()>1)sessions.getRange(2,4,sessions.getLastRow()-1,1).setValues(Array.from({length:sessions.getLastRow()-1},function(){return [new Date(0).toISOString()];}));
+ setDatabaseSetting_(source,'legacyAccessRetired','true');
+}
+function activateRoutedDatabase_(source,target){
+ // This runs under the shared script lock. Refresh the source at cutover so
+ // writes made after the initial connector copy are included as well.
+ const names=CORE_DATABASE_SHEETS_.concat(['APP_WRITES','BROWSER_RECOVERY','CHANGE_HISTORY','DATABASE_BACKUPS']);
+ names.forEach(function(name){const sheet=source.getSheetByName(name);if(!sheet)return;const previous=target.getSheetByName(name);if(previous)previous.setName(('PRE_CUTOVER_'+Utilities.getUuid().slice(0,8)+'_'+name).slice(0,100));sheet.copyTo(target).setName(name);});
+ // Never migrate session credentials. The target has a fresh session table.
+ let sessions=target.getSheetByName('SESSIONS');if(!sessions){sessions=target.insertSheet('SESSIONS');sessions.appendRow(['Session ID','Username','Token','Expires At','Created At','User ID','Password Version']);}
+ SpreadsheetApp.flush();
+ names.forEach(function(name){const sheet=source.getSheetByName(name);if(sheet&&JSON.stringify(sheet.getDataRange().getValues())!==JSON.stringify(target.getSheetByName(name).getDataRange().getValues()))throw new Error('Cutover verification failed: '+name);});
+ setDatabaseSetting_(target,'spreadsheetId',target.getId());setDatabaseSetting_(target,'primaryDatabaseId',target.getId());setDatabaseSetting_(target,'databaseRouteState','ACTIVE');setDatabaseSetting_(target,'migrationSourceId',source.getId());
+ // Mark routing active before retiring old access. If retirement is interrupted,
+ // later requests resume it without copying disabled accounts into the target.
+ spreadsheetCache_=target;recoverBusinessWrites_();
+ setDatabaseSetting_(source,'databaseRouteState','ACTIVE');
+ retireLegacyDatabaseAccess_(source);
+ const info=target.getSheetByName('MIGRATION_INFO');if(info)info.getRange(2,2).setValue('ACTIVE — '+new Date().toISOString());
+}
+function resolvePrimaryDatabase_(source){
+ const id=databaseSetting_(source,'primaryDatabaseId');if(!id||id===source.getId())return source;
+ if(!/^[A-Za-z0-9_-]{20,}$/.test(id))throw new Error('Invalid primary database routing ID');
+ const target=SpreadsheetApp.openById(id),lock=LockService.getScriptLock(),acquire=!databaseLockHeld_;
+ if(acquire){lock.waitLock(10000);databaseLockHeld_=true;}
+ try{const state=databaseSetting_(source,'databaseRouteState');if(state==='PENDING')activateRoutedDatabase_(source,target);else if(state!=='ACTIVE')throw new Error('Database routing has not been activated');else retireLegacyDatabaseAccess_(source);}finally{if(acquire){lock.releaseLock();databaseLockHeld_=false;}}
+ return target;
+}
+function safeJsonChunks_(value){const text=typeof value==='string'?value:JSON.stringify(value),chunks=[];for(let i=0;i<text.length;){let end=Math.min(i+28000,text.length);const c=text.charCodeAt(end-1);if(end<text.length&&c>=0xD800&&c<=0xDBFF)end--;chunks.push(text.slice(i,end));i=end;}return {text:text,chunks:chunks,checksum:digest_(text)};}
+function archiveTable_(ss,name){let sheet=ss.getSheetByName(name);if(!sheet){sheet=ss.insertSheet(name);sheet.appendRow(['Archive ID','Created At','Actor ID','Actor','Reason','Chunk','Chunks','Checksum','Data JSON']);}return sheet;}
+function storeArchive_(ss,name,id,actor,reason,data){
+ const sheet=archiveTable_(ss,name),packed=safeJsonChunks_(data),existing=sheet.getDataRange().getValues().slice(1).filter(function(r){return r[0]===id;});
+ if(existing.length){if(existing[0][2]!==String(actor[0])||existing[0][7]!==packed.checksum||existing.length!==packed.chunks.length)throw new Error('Backup ID conflict');return id;}
+ const now=new Date().toISOString(),rows=packed.chunks.map(function(chunk,i){return [id,now,String(actor[0]),String(actor[1]),String(reason),i,packed.chunks.length,packed.checksum,chunk];});
+ if(sheet.getMaxRows()<sheet.getLastRow()+rows.length)sheet.insertRowsAfter(sheet.getMaxRows(),rows.length);
+ sheet.getRange(sheet.getLastRow()+1,1,rows.length,9).setValues(rows);SpreadsheetApp.flush();return id;
+}
+function backupValues_(sheet){return sheet.getDataRange().getValues().map(function(row){return row.map(function(value){return Object.prototype.toString.call(value)==='[object Date]'?{$date:value.toISOString()}:value;});});}
+function ensureDailyDatabaseBackup_(ss,actor){
+ const id='DAILY-'+businessToday(),sheet=ss.getSheetByName('DATABASE_BACKUPS');if(sheet&&sheet.getDataRange().getValues().slice(1).some(function(r){return r[0]===id;}))return id;
+ const tables={};CORE_DATABASE_SHEETS_.forEach(function(name){const sheet=ss.getSheetByName(name);if(sheet)tables[name]=backupValues_(sheet);});
+ // User records/hashes are backed up; active session credentials are excluded.
+ return storeArchive_(ss,'DATABASE_BACKUPS',id,actor,'AUTOMATIC_DAILY',{version:1,spreadsheetId:ss.getId(),createdAt:new Date().toISOString(),tables:tables,excluded:['SESSIONS']});
+}
+function businessChanges_(before,tables){const changes=[];['customers','conditions','contracts','budgets','transactions'].forEach(function(key){if(!tables[key])return;tables[key].forEach(function(record){const id=key==='customers'?record.code:record.id,previous=(before[key]||[]).find(function(row){return (key==='customers'?row.code:row.id)===id;})||null;if(JSON.stringify(previous)!==JSON.stringify(record))changes.push({table:key,id:String(id),before:previous,after:record});});});return changes;}
+function appendChangeHistory_(ss,operation,actor,action,changes){
+ if(!changes.length)return;let sheet=ss.getSheetByName('CHANGE_HISTORY');if(!sheet){sheet=ss.insertSheet('CHANGE_HISTORY');sheet.appendRow(['Event ID','Timestamp','Actor','Action','Table','Record ID','Operation ID','Chunk','Chunks','Checksum','Before / After JSON']);}
+ const known=new Set(sheet.getDataRange().getValues().slice(1).map(function(row){return row[0]+':'+row[7];})),rows=[],now=new Date().toISOString();
+ changes.forEach(function(change,index){const id='EV-'+digest_(operation+':'+change.table+':'+change.id+':'+index),packed=safeJsonChunks_({before:change.before,after:change.after});packed.chunks.forEach(function(chunk,i){if(!known.has(id+':'+i))rows.push([id,now,String(actor[1]),action,change.table,change.id,operation,i,packed.chunks.length,packed.checksum,chunk]);});});
+ if(rows.length){if(sheet.getMaxRows()<sheet.getLastRow()+rows.length)sheet.insertRowsAfter(sheet.getMaxRows(),rows.length);sheet.getRange(sheet.getLastRow()+1,1,rows.length,11).setValues(rows);SpreadsheetApp.flush();}
+}
+function safeRecovery_(raw,actor){
+ if(!raw||!/^REC-[A-Za-z0-9-]{8,100}$/.test(String(raw.id))||!raw.business)throw new Error('Invalid browser recovery');
+ const admin=actor[5]==='ADMIN',team=String(actor[6]),input=raw.business,customers=(Array.isArray(input.customers)?input.customers:[]).filter(function(row){return admin||row.team===team;}),codes=new Set(customers.map(function(row){return row.code;})),business={customers:customers};
+ ['conditions','contracts','budgets','transactions'].forEach(function(key){business[key]=(Array.isArray(input[key])?input[key]:[]).filter(function(row){return codes.has(row.customerCode)&&(key==='conditions'||admin||row.team===team);});});
+ const users=(Array.isArray(raw.users)?raw.users:[]).filter(function(user){return admin||user.id===String(actor[0]);}).map(function(user){const safe={};['id','username','fullName','email','role','team','isActive','createdAt','lastLogin','status','updatedAt','deletedAt'].forEach(function(key){if(user[key]!==undefined)safe[key]=user[key];});return safe;});
+ return {version:1,id:String(raw.id),createdAt:String(raw.createdAt||''),actorId:String(actor[0]),spreadsheetId:getSpreadsheet().getId(),reason:String(raw.reason||'LEGACY_CACHE'),business:business,users:users,settings:normalizeSharedSettings_(raw.settings||{}),logs:(Array.isArray(raw.logs)?raw.logs:[]).filter(function(row){return admin||row.team===team&&row.user===actor[1];})};
+}
+function saveBrowserRecovery_(payload,token){
+ const ss=userTables_(),actor=requireSession_(ss,token,false);recoverBusinessWrites_();const recovery=safeRecovery_(payload.recovery,actor);
+ ensureDailyDatabaseBackup_(ss,actor);storeArchive_(ss,'BROWSER_RECOVERY',recovery.id,actor,recovery.reason,recovery);
+ const read=readBusinessData_(token);
+ return Object.assign({},read,{success:true,recoveryVersion:1,recoveryId:recovery.id,users:actor[5]==='ADMIN'?userRows_(ss).map(publicUser_):[publicUser_(actor)],message:'Browser data backed up; authoritative Sheet data loaded.'});
 }

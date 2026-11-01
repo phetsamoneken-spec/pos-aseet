@@ -28,4 +28,7 @@ assert.equal((await storage.retryPendingBusinessWrite()).success,true);assert.eq
 // A pending command for a different spreadsheet/account must never be redirected.
 values.set(oldKey,JSON.stringify({...pending,spreadsheetId:'OTHER_SHEET_ID_0123456789'}));assert.equal((await storage.loadBusinessFromSheets()).success,true);assert.equal(storage.getPendingBusinessWrite(),null);assert.ok(values.get(oldKey));assert.equal(mutations,2);
 values.set(oldKey,JSON.stringify({...pending,actorId:'another-user',spreadsheetId:sheetId}));assert.equal((await storage.loadBusinessFromSheets()).success,true);assert.equal(storage.getPendingBusinessWrite(),null);assert.equal(mutations,2);
+server.context.setDatabaseSetting_(server.ss,'migrationSourceId','OLD_SOURCE_SHEET_0123456789');
+values.set(oldKey,JSON.stringify({...pending,spreadsheetId:'OLD_SOURCE_SHEET_0123456789'}));
+assert.equal((await storage.loadBusinessFromSheets()).success,true);assert.equal(values.get(oldKey),undefined);assert.equal(storage.getPendingBusinessWrite(),null);assert.equal(mutations,3,'an authenticated owner-declared database cutover preserves the existing operation receipt');
 console.log('PASS: new deployment login/default, same-Sheet/account outbox migration, retained receipt on failure, unchanged operation ID, no duplicate writes and no cross-Sheet/account redirection.');

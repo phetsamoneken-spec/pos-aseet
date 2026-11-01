@@ -491,6 +491,7 @@ export const UsersView: React.FC = () => {
                         {/* Last Login */}
                         <td className="py-3.5 px-3 text-slate-500 text-[11px] whitespace-nowrap">
                           {u.lastLogin || '-'}
+                          {u.updatedAt&&<span className="block text-[10px] text-slate-500">{lang==='lo'?'ແກ້ໄຂ:':'Edited:'} {new Date(u.updatedAt).toLocaleString(lang==='lo'?'lo-LA':'en-GB',{timeZone:'Asia/Bangkok'})}</span>}
                         </td>
 
                         {/* Status */}
