@@ -2,7 +2,7 @@
 
 Existing MKT Budget React/Vite application, including five dashboard themes, customers, contract cycles, budgets, transactions, reports, user management, and Google Apps Script integration.
 
-Source version: **2026.11.01.10**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. Browser-specific backend overrides cannot change the production data source. Local development retains the separate demo mode. Theme selection is in Settings and saves immediately per user in this browser. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. Business-data loading requires installing this release’s updated Code.gs.
+Source version: **2026.11.01.11**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using a shared deployment backend on new devices and browsers with blank settings. Browser-specific backend overrides cannot change the production data source. Local development retains the separate demo mode. Admin chooses the theme in Settings and publishes it with the shared configuration. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. Business-data loading requires installing this release’s updated Code.gs.
 
 ## Run locally
 
@@ -25,6 +25,8 @@ node --import tsx tests/customer-delete.test.ts
 node --import tsx tests/deployment-backend.test.ts
 node --import tsx tests/sheet-business-read.test.ts
 node --import tsx tests/admin-policy.test.ts
+TZ=Asia/Bangkok node --import tsx tests/annual-budgets.test.ts
+TZ=America/Los_Angeles node --import tsx tests/annual-budgets.test.ts
 TZ=Asia/Bangkok node --import tsx tests/excel-calendar-date.test.ts
 TZ=America/Los_Angeles node --import tsx tests/excel-calendar-date.test.ts
 node --import tsx tests/gas-service.test.ts
@@ -74,3 +76,7 @@ TypeScript, the production build, backend mock tests and frontend service tests 
 ## Public source export
 
 This export contains no live spreadsheet identifier or account credentials. Configure private values in Apps Script. Local demonstration accounts use `CHANGE_ME_...` placeholders. Server-side session and role checks protect user-account endpoints; legacy business-data endpoints now require sessions and enforce Admin/team permissions. The separate Sites-hosted source is unchanged by this GitHub release.
+
+## Contract-anniversary annual budgets
+
+Budgets reset on each contract anniversary in the Lao calendar day (UTC+7), with separate retained annual balances and no carry-forward. Current dashboards select the current year; contract details show all years. Backdated receipts and cancellations affect their original year. See [annual budget rules and installation](gas/ANNUAL-BUDGETS.md). Install this release’s Code.gs and deploy a new version of the existing Web App before syncing annual rows. Reads derive the correct year without writing cells; Admin Sync persists annual rows. Legacy spending without dated transactions stays in the first year for review.

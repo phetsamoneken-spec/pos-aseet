@@ -26,7 +26,7 @@ globalThis.fetch = async (url, init) => {
   assert.equal(body.action, 'SYNC_BULK_DATA');
   assert.equal(body.payload.customers.length, 578);
   assert.ok(body.payload.budgets.length > 0);
-  return new Response(JSON.stringify({ success: true, syncVersion: 2, message: 'saved' }));
+  return new Response(JSON.stringify({ success: true, syncVersion: 2, annualBudgetVersion: 1, message: 'saved' }));
 };
 assert.equal((await GasService.syncAllToGoogleSheets(endpoint)).success, true);
 assert.equal((await GasService.syncAllToGoogleSheets('https://example.com/exec')).success, false);

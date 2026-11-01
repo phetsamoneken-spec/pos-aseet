@@ -17,7 +17,7 @@ const SYNC_TABLES = [
   ['customers', 'CUSTOMERS', ['Customer Code','Customer Name','Team','MDE','Phone','Address','Province','Status','Created At','Contact Person'], ['code','name','team','mde','phone','address','province','status','createdAt','contactPerson']],
   ['conditions', 'CUSTOMER_CONDITIONS', ['ID','Customer Code','Condition Quantity','Condition UOM','Product Description','Updated At','Price per Unit'], ['id','customerCode','conditionQuantity','conditionUOM','conditionProductDescription','updatedAt','pricePerUnit']],
   ['contracts', 'CONTRACTS', ['Contract ID','Customer Code','Customer Name','Team','Commencing On','Expiring On','Cycle Number','Status','Notes','Created At'], ['id','customerCode','customerName','team','commencingOn','expiringOn','cycleNumber','status','notes','createdAt']],
-  ['budgets', 'BUDGETS', ['Budget ID','Contract ID','Customer Code','Team','Annual Amount','Total Used','Remaining Amount','Utilization (%)','Status','Allow Exception','Exception Reason','Updated At'], ['id','contractId','customerCode','team','annualAmount','totalUsed','remainingAmount','utilizationPercentage','status','allowException','exceptionReason','updatedAt']],
+  ['budgets', 'BUDGETS', ['Budget ID','Contract ID','Customer Code','Team','Annual Amount','Total Used','Remaining Amount','Utilization (%)','Status','Allow Exception','Exception Reason','Updated At','Budget Year','Period Start','Period End','Legacy Undated Used'], ['id','contractId','customerCode','team','annualAmount','totalUsed','remainingAmount','utilizationPercentage','status','allowException','exceptionReason','updatedAt','periodNumber','periodStart','periodEnd','unallocatedUsed']],
   ['transactions', 'BUDGET_TRANSACTIONS', ['Transaction ID','Date','Customer Code','Customer Name','Team','Contract ID','Budget ID','Category','Description','Amount','Invoice Ref','Created By','Created At','Status','Cancellation Reason','Cancelled By','Cancelled At'], ['id','date','customerCode','customerName','team','contractId','budgetId','category','description','amount','invoiceRef','createdBy','createdAt','status','cancellationReason','cancelledBy','cancelledAt']],
   ['logs', 'ACTIVITY_LOG', ['Log ID','Timestamp','User','Role','Team','Action','Details'], ['id','timestamp','user','role','team','action','details']],
   ['settingsRows', 'SETTINGS', ['Setting Key','Setting Value','Description','Updated At'], ['key','value','description','updatedAt']]
@@ -83,6 +83,10 @@ function handleBulkSync(p) {
   const spreadsheetId = ss.getId();
   if (p.spreadsheetId && p.spreadsheetId !== 'YOUR_SPREADSHEET_ID' && p.spreadsheetId !== spreadsheetId) throw new Error('Spreadsheet ID does not match the configured backend. Click Test in Settings to load its ID.');
   const data = Object.assign({}, p);
+  if(Array.isArray(data.contracts)&&Array.isArray(data.budgets)&&Array.isArray(data.transactions)){
+    const annual=projectAnnualBudgets(data.contracts,data.budgets,data.transactions);
+    data.budgets=annual.budgets;data.transactions=annual.transactions;
+  }
   if (p.settings !== undefined) {
     if (!p.settings || typeof p.settings !== 'object' || Array.isArray(p.settings)) throw new Error('settings must be an object');
     normalizeSharedSettings_(p.settings);
@@ -112,7 +116,7 @@ function handleBulkSync(p) {
     return { success: false, error: String(error), message: 'Sync incomplete. Some writes may have completed; retry is safe by ID.', appliedSheets: appliedSheets, counts: counts };
   }
   const total = plans.reduce(function(sum, plan) { return sum + plan.received; }, 0);
-  return { success: true, syncVersion: 2, message: 'Saved ' + total + ' records across ' + plans.length + ' sheets (upsert by ID).', counts: counts, spreadsheetId: spreadsheetId, syncedAt: new Date().toISOString() };
+  return { success: true, syncVersion: 2, annualBudgetVersion: 1, message: 'Saved ' + total + ' records across ' + plans.length + ' sheets (upsert by ID).', counts: counts, spreadsheetId: spreadsheetId, syncedAt: new Date().toISOString() };
 }
 
 function getSpreadsheet() {
@@ -176,7 +180,8 @@ function doPost(e) {
     if (action === 'GET_SHARED_SETTINGS') { const ss=userTables_(),actor=requireSession_(ss,postData.authToken,false);return jsonResponse({success:true,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor)}); }
     if (action === 'SAVE_SHARED_SETTINGS') return jsonResponse(saveSharedSettings_(payload,postData.authToken));
     if (action === 'SYNC_BULK_DATA') requireSession_(userTables_(),postData.authToken,true);
-    if (['ADD_TRANSACTION','CANCEL_TRANSACTION','NEW_CONTRACT_CYCLE','UPDATE_BUDGET'].indexOf(action)>=0) authorizeLegacyBusiness_(action,payload,postData.authToken);
+    if (action==='ADD_TRANSACTION'||action==='CANCEL_TRANSACTION') return jsonResponse(handleAnnualTransaction_(action,payload,postData.authToken));
+    if (['NEW_CONTRACT_CYCLE','UPDATE_BUDGET'].indexOf(action)>=0) authorizeLegacyBusiness_(action,payload,postData.authToken);
     const userActions = ['AUTH_LOGIN','AUTH_ME','AUTH_LOGOUT','GET_USERS','SYNC_USERS','ADD_USER','UPDATE_USER','RESET_USER_PASSWORD','DELETE_USER','UPDATE_PROFILE'];
     if (userActions.indexOf(action) >= 0) return jsonResponse(handleUserAction_(action,payload,postData.authToken));
 
@@ -2028,9 +2033,9 @@ function readBusinessData_(token) {
       const record={};
       table[3].forEach(function(field,index) {
         const column=headers.indexOf(table[2][index]); let value=column < 0 ? '' : row[column];
-        if (Object.prototype.toString.call(value) === '[object Date]') value=Utilities.formatDate(value,ss.getSpreadsheetTimeZone(),(['date','commencingOn','expiringOn'].indexOf(field)>=0 || field==='createdAt' && table[0]==='customers') ? 'yyyy-MM-dd' : "yyyy-MM-dd'T'HH:mm:ssXXX");
-        if (['conditionQuantity','pricePerUnit','cycleNumber','annualAmount','totalUsed','remainingAmount','utilizationPercentage','amount'].indexOf(field)>=0) {
-          if (value === '' && field === 'pricePerUnit') return;
+        if (Object.prototype.toString.call(value) === '[object Date]') value=Utilities.formatDate(value,ss.getSpreadsheetTimeZone(),(['date','commencingOn','expiringOn','periodStart','periodEnd'].indexOf(field)>=0 || field==='createdAt' && table[0]==='customers') ? 'yyyy-MM-dd' : "yyyy-MM-dd'T'HH:mm:ssXXX");
+        if (['conditionQuantity','pricePerUnit','cycleNumber','annualAmount','totalUsed','remainingAmount','utilizationPercentage','amount','periodNumber','unallocatedUsed'].indexOf(field)>=0) {
+          if (value === '' && (field === 'pricePerUnit'||field==='periodNumber'||field==='unallocatedUsed')) return;
           value=Number(typeof value==='string' ? value.replace(/,/g,'').trim() : value);
           if (!isFinite(value)) throw new Error(table[1]+': invalid '+field);
         } else if (field==='allowException') value=value===true || String(value).toUpperCase()==='TRUE';
@@ -2054,7 +2059,9 @@ function readBusinessData_(token) {
   snapshot.transactions=snapshot.transactions.filter(function(row){return codes.has(row.customerCode) && (!row.contractId || contractIds.has(row.contractId)) && (scope==='ALL' || !row.team || row.team===scope);});
   ['contracts','budgets','transactions'].forEach(function(key){snapshot[key].forEach(function(row){if(!row.team) row.team=snapshot.customers.find(function(c){return c.code===row.customerCode;}).team;});});
   snapshot.transactions.forEach(function(row){row.status=row.status || 'ACTIVE';});
-  return {success:true,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
+  const annual=projectAnnualBudgets(snapshot.contracts,snapshot.budgets,snapshot.transactions);
+  snapshot.budgets=annual.budgets;snapshot.transactions=annual.transactions;
+  return {success:true,annualBudgetVersion:1,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
 }
 
 
@@ -2113,4 +2120,142 @@ function authorizeLegacyBusiness_(action,payload,token){
  }
  if(team!==actor[6])throw new Error('Permission denied for this team');
  payload.team=team;payload.createdBy=actor[1];payload.cancelledBy=actor[1];
+}
+
+// BEGIN SHARED ANNUAL BUDGET RULES (src/services/annualBudgets.js)
+// Shared calendar and annual-budget rules. The exact functions below are also
+// embedded in Code.gs; regression tests enforce parity with the browser.
+function businessToday() {
+  return new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+}
+
+function isCalendarDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+}
+
+function anniversary(start, offset) {
+  const year = Number(start.slice(0, 4)) + offset;
+  const month = Number(start.slice(5, 7));
+  const day = Math.min(Number(start.slice(8, 10)), new Date(Date.UTC(year, month, 0)).getUTCDate());
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** @param {import('../types').Contract} contract */
+function annualPeriods(contract) {
+  const start = contract.commencingOn, end = contract.expiringOn;
+  if (!isCalendarDate(start) || !isCalendarDate(end) || end < start) return [];
+  const periods = [];
+  for (let offset = 0; offset <= 100; offset++) {
+    const periodStart = anniversary(start, offset);
+    if (periodStart > end) return periods;
+    if (offset === 100) throw Error('Contract exceeds 100 annual budget periods');
+    const next = anniversary(start, offset + 1);
+    const previousDay = new Date(Date.parse(next) - 86400000).toISOString().slice(0, 10);
+    periods.push({periodNumber: offset + 1, periodStart, periodEnd: previousDay < end ? previousDay : end});
+  }
+  return periods;
+}
+
+/** @param {import('../types').Budget} budget */
+function refreshBudgetTotals(budget) {
+  budget.remainingAmount = budget.annualAmount - budget.totalUsed;
+  budget.utilizationPercentage = budget.annualAmount > 0 ? Math.round(budget.totalUsed / budget.annualAmount * 1000) / 10 : 0;
+  budget.status = budget.totalUsed > budget.annualAmount ? 'EXCEEDED' : budget.utilizationPercentage >= 100 ? 'CRITICAL_100' : budget.utilizationPercentage >= 80 ? 'WARNING_80' : 'NORMAL';
+  return budget;
+}
+
+/**
+ * Derive separate budgets for each anniversary year without removing history.
+ * Legacy spending not represented by transactions stays in its original year.
+ * @param {import('../types').Contract[]} contracts
+ * @param {import('../types').Budget[]} budgets
+ * @param {import('../types').BudgetTransaction[]} transactions
+ */
+function projectAnnualBudgets(contracts, budgets, transactions) {
+  let result = budgets.map(budget => ({...budget}));
+  const txns = transactions.map(transaction => ({...transaction}));
+  for (const contract of contracts) {
+    const periods = annualPeriods(contract);
+    const stored = result.filter(budget => budget.contractId === contract.id && budget.customerCode === contract.customerCode);
+    if (!periods.length || !stored.length) continue;
+    for(const budget of stored){
+      if(budget.periodNumber!==undefined&&(!Number.isInteger(budget.periodNumber)||budget.periodNumber<1||budget.periodNumber>100))throw Error('Invalid annual budget year');
+      if(budget.unallocatedUsed!==undefined&&(!Number.isFinite(budget.unallocatedUsed)||budget.unallocatedUsed<0))throw Error('Invalid legacy spending amount');
+    }
+    const base = stored.find(budget => budget.periodNumber === 1) || stored[0];
+    const linked = txns.filter(transaction => transaction.contractId === contract.id && transaction.customerCode === contract.customerCode);
+    const residual = new Map();
+    for (const budget of stored) {
+      const recorded = linked.filter(transaction => (transaction.budgetId === budget.id || !transaction.budgetId && budget.id === base.id) && transaction.status === 'ACTIVE').reduce((sum, transaction) => sum + transaction.amount, 0);
+      residual.set(budget.id, Number.isFinite(budget.unallocatedUsed) ? budget.unallocatedUsed : Math.max(0, budget.totalUsed - recorded));
+    }
+    const years = periods.map(period => {
+      const existing = stored.find(budget => (budget.periodNumber || 1) === period.periodNumber);
+      const previous = stored.filter(budget => (budget.periodNumber || 1) < period.periodNumber).sort((a,b) => (b.periodNumber || 1) - (a.periodNumber || 1))[0] || base;
+      const budget = existing ? {...existing} : {
+        ...base, id: `${base.id}-Y${period.periodNumber}`, annualAmount: previous.annualAmount,
+        allowException: false, exceptionReason: ''
+      };
+      return {...budget, ...period, unallocatedUsed: residual.get(budget.id) || 0, totalUsed: residual.get(budget.id) || 0};
+    });
+    // Keep historical budgets even if Admin shortens a contract later.
+    const historical = stored.filter(budget => !years.some(year => year.id === budget.id)).map(budget => ({...budget, unallocatedUsed: residual.get(budget.id) || 0, totalUsed: residual.get(budget.id) || 0}));
+    for (const transaction of linked) {
+      const year = years.find(budget => isCalendarDate(transaction.date) && transaction.date >= budget.periodStart && transaction.date <= budget.periodEnd) ||
+        [...years, ...historical].find(budget => budget.id === transaction.budgetId) || years[0];
+      transaction.budgetId = year.id;
+      if (transaction.status === 'ACTIVE') year.totalUsed += transaction.amount;
+    }
+    const replacements = [...years, ...historical].map(refreshBudgetTotals);
+    result = result.filter(budget => !stored.some(old => old.id === budget.id)).concat(replacements);
+  }
+  return {budgets: result, transactions: txns};
+}
+
+/** @param {import('../types').Budget[]} budgets */
+function selectAnnualBudget(budgets, date = businessToday(), clamp = true) {
+  const sorted = [...budgets].sort((a,b) => (a.periodNumber || 1) - (b.periodNumber || 1));
+  const exact = sorted.find(budget => budget.periodStart && date >= budget.periodStart && date <= budget.periodEnd);
+  if (exact || !clamp) return exact;
+  if (sorted[0]?.periodStart && date < sorted[0].periodStart) return sorted[0];
+  return sorted[sorted.length - 1];
+}
+
+// END SHARED ANNUAL BUDGET RULES
+
+// Authenticated, date-aware transaction writes. Annual balances are updated
+// together with transaction rows under doPost's existing script lock.
+function handleAnnualTransaction_(action,p,token){
+ const ss=userTables_(),actor=requireSession_(ss,token,false),read=readBusinessData_(token),data=read.snapshot;
+ let txn,budget;
+ if(action==='ADD_TRANSACTION'){
+  const customer=data.customers.find(function(c){return c.code===p.customerCode&&c.status!=='DELETED';});
+  const date=p.date||businessToday(),amount=Number(p.amount);
+  if(!customer||!isCalendarDate(date)||!isFinite(amount)||amount<=0)throw new Error('Invalid customer, date or amount');
+  const contract=data.contracts.find(function(c){return c.id===p.contractId&&c.customerCode===customer.code&&date>=c.commencingOn&&date<=c.expiringOn;});
+  if(!contract)throw new Error('Transaction date is outside the selected contract');
+  budget=selectAnnualBudget(data.budgets.filter(function(b){return b.contractId===contract.id&&b.customerCode===customer.code;}),date,false);
+  if(!budget || p.budgetId && p.budgetId!==budget.id)throw new Error('Invalid transaction budget period');
+  const transactionId='TXN-'+digest_(String(actor[0])+':'+String(p.id||Utilities.getUuid()));
+  const existing=data.transactions.find(function(t){return t.id===transactionId;});
+  if(existing){
+   if(existing.customerCode!==customer.code||existing.contractId!==contract.id||existing.date!==date||existing.amount!==amount)throw new Error('Transaction request ID was already used');
+   return {success:true,id:existing.id,budgetId:existing.budgetId,annualBudgetVersion:1,message:'Transaction already saved'};
+  }
+  if(actor[5]!=='ADMIN'&&amount>budget.remainingAmount)throw new Error('Annual budget exceeded; Admin approval required');
+  txn={id:transactionId,date:date,customerCode:customer.code,customerName:customer.name,team:customer.team,contractId:contract.id,budgetId:budget.id,category:String(p.category||'Other'),description:String(p.description||''),amount:amount,invoiceRef:String(p.invoiceRef||''),createdBy:actor[1],createdAt:new Date().toISOString(),status:'ACTIVE'};
+  data.transactions.push(txn);budget.totalUsed+=amount;
+ }else{
+  txn=data.transactions.find(function(t){return t.id===p.txnId;});
+  if(!txn||txn.status==='CANCELLED')throw new Error('Transaction not found or already cancelled');
+  budget=data.budgets.find(function(b){return b.id===txn.budgetId;});
+  if(!budget)throw new Error('Original annual budget not found');
+  budget.totalUsed=Math.max(0,budget.totalUsed-txn.amount);
+  txn.status='CANCELLED';txn.cancellationReason=String(p.reason||'Cancelled by user');txn.cancelledBy=actor[1];txn.cancelledAt=new Date().toISOString();
+ }
+ refreshBudgetTotals(budget);budget.updatedAt=new Date().toISOString();
+ const result=handleBulkSync({budgets:data.budgets,transactions:data.transactions,logs:[{id:'LOG-'+Utilities.getUuid(),timestamp:new Date().toISOString(),user:actor[1],role:actor[5],team:txn.team,action:action,details:txn.id+' / '+txn.budgetId}]});
+ if(!result.success)return result;
+ return {success:true,id:txn.id,budgetId:txn.budgetId,annualBudgetVersion:1,message:action==='ADD_TRANSACTION'?'Transaction added successfully':'Transaction cancelled'};
 }

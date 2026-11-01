@@ -67,6 +67,10 @@ export interface Budget {
   customerCode: string;
   team: Team;
   annualAmount: number; // Configurable monetary budget
+  unallocatedUsed?: number; // Legacy spending without dated transaction records
+  periodNumber?: number; // Anniversary year within the contract
+  periodStart?: string; // Inclusive YYYY-MM-DD
+  periodEnd?: string; // Inclusive, capped at contract expiry
   totalUsed: number;
   remainingAmount: number;
   utilizationPercentage: number;

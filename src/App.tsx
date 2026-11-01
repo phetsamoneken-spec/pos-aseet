@@ -49,6 +49,7 @@ export default function App() {
   useEffect(()=>{
     let lastRead=0;
     const refresh=async()=>{
+      storage.refreshBudgetCalendar();
       if(document.visibilityState==='hidden'||Date.now()-lastRead<5000)return;
       if(currentUser && backendUrl && storage.hasRemoteUserSession()){
         lastRead=Date.now();
@@ -56,8 +57,9 @@ export default function App() {
         await storage.loadBusinessFromSheets();
       }
     };
+    const calendarTimer=window.setInterval(()=>storage.refreshBudgetCalendar(),30000);
     refresh();window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);
-    return ()=>{window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
+    return ()=>{window.clearInterval(calendarTimer);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
   },[currentUser?.id,backendUrl]);
 
   // Modal States

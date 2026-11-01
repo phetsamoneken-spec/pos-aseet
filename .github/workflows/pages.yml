@@ -40,6 +40,8 @@ jobs:
           node --import tsx tests/deployment-backend.test.ts
           node --import tsx tests/sheet-business-read.test.ts
           node --import tsx tests/admin-policy.test.ts
+          TZ=Asia/Bangkok node --import tsx tests/annual-budgets.test.ts
+          TZ=America/Los_Angeles node --import tsx tests/annual-budgets.test.ts
           TZ=Asia/Bangkok node --import tsx tests/excel-calendar-date.test.ts
           TZ=America/Los_Angeles node --import tsx tests/excel-calendar-date.test.ts
           node --import tsx tests/gas-service.test.ts

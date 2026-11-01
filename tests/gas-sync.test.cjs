@@ -272,7 +272,7 @@ test('only a signed-in Admin can publish Excel data and shared settings; team us
 });
 
 test('legacy team transaction writes cannot forge customer/contract/budget links or spreadsheet formulas',()=>{
- const b=backend();b.context.initializeDatabase();const p=payload();p.budgets[0].customerCode='C1';
+ const b=backend();b.context.initializeDatabase();const p=payload();p.budgets[0].customerCode='C1';p.contracts[0].commencingOn='2026-01-01';p.contracts[0].expiringOn='2026-12-31';
  p.customers.push({code:'C2',name:'Other team',team:'B2'});p.contracts.push({id:'CT2',customerCode:'C2',team:'B2',cycleNumber:1});p.budgets.push({id:'BD2',contractId:'CT2',customerCode:'C2',team:'B2',annualAmount:100});
  assert.equal(b.post(p).success,true);
  const admin=userRequest(b,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});
@@ -285,4 +285,34 @@ test('legacy team transaction writes cannot forge customer/contract/budget links
  assert.equal(saved.success,true);
  const row=b.sheets.get('BUDGET_TRANSACTIONS').rows.at(-1);
  assert.notEqual(row[0],'forged-id');assert.equal(row[3],'ລູກຄ້າ');assert.equal(row[4],'B1');assert.equal(row[11],'txn-reader');assert.equal(row[8],"'=1+1");
+});
+
+test('annual budgets persist by contract anniversary and authenticated transactions charge/cancel their own year',()=>{
+ const {b,login}=signedInBackend(),p=payload();
+ Object.assign(p.contracts[0],{commencingOn:'2024-05-19',expiringOn:'2027-05-18',team:'B1'});
+ Object.assign(p.budgets[0],{customerCode:'C1',team:'B1',annualAmount:1000,totalUsed:200,remainingAmount:800});
+ Object.assign(p.transactions[0],{budgetId:'B1',team:'B1',date:'2024-06-01',amount:200});
+ const sync=userRequest(b,'SYNC_BULK_DATA',p,login.token);assert.equal(sync.success,true);assert.equal(sync.annualBudgetVersion,1);
+ const originalRows=b.sheets.get('BUDGETS').rows.length;
+ const read=()=>userRequest(b,'GET_BUSINESS_DATA',{},login.token).snapshot;
+ let data=read();assert.equal(data.budgets.length,3);assert.equal(b.sheets.get('BUDGETS').rows.length,originalRows,'reads are projections without Sheet writes');
+ assert.deepEqual(JSON.parse(JSON.stringify(data.budgets.map(x=>[x.periodNumber,x.periodStart,x.periodEnd,x.totalUsed]))),[[1,'2024-05-19','2025-05-18',200],[2,'2025-05-19','2026-05-18',0],[3,'2026-05-19','2027-05-18',0]]);
+ assert.equal(userRequest(b,'SYNC_BULK_DATA',{...data},login.token).success,true);assert.equal(b.sheets.get('BUDGETS').rows.length,4);
+ userRequest(b,'ADD_USER',{username:'annual-team',password:'Annual-team-test!',fullName:'Team',role:'TEAM_USER',team:'B1'},login.token);
+ const team=userRequest(b,'AUTH_LOGIN',{username:'annual-team',password:'Annual-team-test!'});
+ const entry={customerCode:'C1',contractId:'CT1',budgetId:'B1-Y2',date:'2025-05-19',amount:100,description:'Second year',category:'Other'};
+ assert.equal(userRequest(b,'ADD_TRANSACTION',{...entry,budgetId:'B1'},team.token).success,false,'cannot charge the previous year');
+ assert.equal(userRequest(b,'ADD_TRANSACTION',{...entry,date:'2027-05-19'},team.token).success,false,'contract expiry caps annual resets');
+ assert.equal(userRequest(b,'ADD_TRANSACTION',{...entry,amount:1001},team.token).success,false,'team budget limit uses the chosen year');
+ const added=userRequest(b,'ADD_TRANSACTION',entry,team.token);assert.equal(added.success,true);assert.equal(added.budgetId,'B1-Y2');
+ data=read();assert.equal(data.budgets.find(b=>b.id==='B1-Y2').totalUsed,100);assert.equal(data.budgets.find(b=>b.id==='B1').totalUsed,200);assert.equal(data.budgets.find(b=>b.id==='B1-Y3').remainingAmount,1000);
+ assert.equal(userRequest(b,'CANCEL_TRANSACTION',{txnId:'T1',reason:'Prior year cancellation'},team.token).success,true);
+ data=read();assert.equal(data.budgets.find(b=>b.id==='B1').totalUsed,0);assert.equal(data.budgets.find(b=>b.id==='B1-Y2').totalUsed,100);assert.equal(data.transactions.find(t=>t.id==='T1').status,'CANCELLED');
+ assert.equal(userRequest(b,'CANCEL_TRANSACTION',{txnId:'T1'},team.token).success,false);
+ const retryEntry={...entry,id:'stable-request-key',amount:900};
+ b.failWrites.add('BUDGET_TRANSACTIONS');assert.equal(userRequest(b,'ADD_TRANSACTION',retryEntry,team.token).success,false);
+ b.failWrites.clear();const retried=userRequest(b,'ADD_TRANSACTION',retryEntry,team.token);assert.equal(retried.success,true);
+ assert.equal(userRequest(b,'ADD_TRANSACTION',retryEntry,team.token).success,true,'retry acknowledges the same transaction even after the budget is exhausted');
+ data=read();assert.equal(data.transactions.filter(t=>t.id===retried.id).length,1);assert.equal(data.budgets.find(b=>b.id==='B1-Y2').totalUsed,1000,'partial writes and retries do not duplicate spending');
+ assert.equal(userRequest(b,'SYNC_BULK_DATA',{...data},login.token).success,true);assert.equal(b.sheets.get('BUDGETS').rows.length,4);assert.equal(read().budgets.find(b=>b.id==='B1-Y2').totalUsed,1000);
 });

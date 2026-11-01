@@ -33,7 +33,7 @@ export function validateBusinessSnapshot(value: unknown, scope: Team): BusinessS
       if('team' in row && (!/^B[1-7]$/.test(row.team) || scope!=='ALL'&&row.team!==scope))throw Error('Unexpected Sheet team');
       if(key==='customers' && (typeof (row as Customer).name!=='string' || !['ACTIVE','INACTIVE','DELETED'].includes((row as Customer).status)))throw Error('Invalid Sheet customer');
       if(key!=='customers' && !ids.get('customers')!.has((row as {customerCode:string}).customerCode))throw Error('Unknown customer reference in '+key);
-      for(const field of ['conditionQuantity','pricePerUnit','cycleNumber','annualAmount','totalUsed','remainingAmount','utilizationPercentage','amount']){
+      for(const field of ['conditionQuantity','pricePerUnit','cycleNumber','annualAmount','totalUsed','remainingAmount','utilizationPercentage','amount','periodNumber','unallocatedUsed']){
         const value=(row as unknown as Record<string,unknown>)[field];
         if(field in row && (typeof value!=='number'||!Number.isFinite(value)))throw Error('Invalid Sheet number: '+field);
       }

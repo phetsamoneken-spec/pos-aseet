@@ -10,6 +10,7 @@ import { remoteSession } from './remoteAccounts';
 export interface GasResponse<T = unknown> {
   success: boolean;
   syncVersion?: number;
+  annualBudgetVersion?: number;
   message?: string;
   data?: T;
   error?: string;
@@ -157,7 +158,7 @@ export class GasService {
     }
 
     const res = await this.sendToGas('SYNC_BULK_DATA', payload, scriptUrl);
-    if (res.success === true && res.syncVersion !== 2) {
+    if (res.success === true && (res.syncVersion !== 2 || res.annualBudgetVersion !== 1)) {
       return { success: false, message: 'The backend is still the old version. Deploy the unified Code.gs as a new Web App version, then sync again.' };
     }
     if(res.success===true){

@@ -290,6 +290,7 @@ export const BudgetManagementView: React.FC<BudgetManagementViewProps> = ({
                   <div>{getStatusBadge(budget?.status, utilRate)}</div>
                 </div>
 
+                {budget?.periodStart && <p className="mt-2 text-xs text-blue-700">{lang==='lo'?'ງົບປີທີ':'Budget year'} {budget.periodNumber}: {budget.periodStart} → {budget.periodEnd}</p>}
                 {/* Contract cycle dates */}
                 <div className="mt-3 text-xs text-slate-500 bg-slate-50 p-2 rounded-xl flex items-center justify-between">
                   <span>{t.contractPeriod}:</span>

@@ -10,6 +10,7 @@ import {
   FileText,
   ShieldAlert
 } from 'lucide-react';
+import { businessToday } from '../services/annualBudgets';
 import { storage } from '../services/storage';
 import { translations, Language } from '../locales/translations';
 import { Team, TransactionCategory } from '../types';
@@ -41,7 +42,7 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState<number | ''>('');
   const [invoiceRef, setInvoiceRef] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(businessToday());
 
   // Admin Exception Authorization
   const [allowException, setAllowException] = useState(false);
@@ -49,8 +50,8 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const selectedCustomer = storage.getCustomerByCode(customerCode);
-  const activeContract = selectedCustomer ? storage.getActiveContract(selectedCustomer.code) : undefined;
-  const budget = activeContract ? storage.getContractBudget(activeContract.id) : undefined;
+  const activeContract = selectedCustomer ? storage.getContractForDate(selectedCustomer.code,date) : undefined;
+  const budget = activeContract ? storage.getContractBudget(activeContract.id,date,false) : undefined;
 
   const numAmount = Number(amount) || 0;
   const remainingBudget = budget?.remainingAmount || 0;
@@ -90,6 +91,8 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
       );
       return;
     }
+
+    if(!budget){setErrorMessage(lang==='lo'?'ວັນທີລາຍຈ່າຍຢູ່ນອກໄລຍະສັນຍາ':'Transaction date is outside the contract');return;}
 
     const res = storage.addTransaction({
       customerCode,
@@ -139,6 +142,9 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {budget?.periodStart && <p className="rounded-xl bg-blue-50 p-3 text-xs text-blue-800" data-testid="transaction-budget-period">
+            {lang==='lo'?'ງົບປະມານປີທີ':'Budget year'} {budget.periodNumber}: {budget.periodStart} → {budget.periodEnd}
+          </p>}
           
           {errorMessage && (
             <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">

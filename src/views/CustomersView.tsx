@@ -475,7 +475,8 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
                           {item.contract?.commencingOn} → {item.contract?.expiringOn}
                         </div>
                         <div className="text-[10px] text-slate-400">
-                          {t.cycleNumber} {item.contract?.cycleNumber || 1}
+                          {t.cycleNumber} {item.contract?.cycleNumber || 1} · {lang==='lo'?'ງົບປີທີ':'Budget year'} {item.budget?.periodNumber || 1}
+                          {item.budget?.periodStart && <span className="block">{item.budget.periodStart} → {item.budget.periodEnd}</span>}
                         </div>
                       </td>
                       <td className="py-3 px-4 text-right font-semibold text-slate-900 whitespace-nowrap">

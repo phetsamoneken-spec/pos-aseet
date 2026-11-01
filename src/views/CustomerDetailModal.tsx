@@ -162,6 +162,11 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                   </span>
                 </div>
 
+                {budget?.periodStart && <p className="text-xs text-slate-600 mb-3" data-testid="annual-budget-period">
+                  {lang==='lo'?'ງົບປະມານປີທີ':'Budget year'} {budget.periodNumber}: {budget.periodStart} → {budget.periodEnd}
+                  <span className="block mt-1">{lang==='lo'?'ເລີ່ມງົບໃໝ່ທຸກປີຕາມວັນເລີ່ມສັນຍາ; ບໍ່ຍົກຍອດເຫຼືອຂ້າມປີ.':'Resets on the contract anniversary; unused balances do not carry forward.'}</span>
+                </p>}
+
                 <div className="grid grid-cols-3 gap-3 text-center">
                   <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-xs">
                     <p className="text-[10px] text-slate-500 font-semibold">{t.annualBudget}</p>
@@ -308,6 +313,16 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                           <span className="text-slate-400">{t.budgetUsed}:</span>
                           <p className="font-bold text-amber-600">{storage.formatCurrency(b?.totalUsed || 0)}</p>
                         </div>
+                      </div>
+
+                      <div className="mt-3 overflow-x-auto">
+                        <table className="w-full text-xs text-left" aria-label={lang==='lo'?'ປະຫວັດງົບປະມານປະຈຳປີ':'Annual budget history'}>
+                          <thead><tr className="text-slate-500"><th className="py-2">{lang==='lo'?'ຮອບປີ':'Year / period'}</th><th className="text-right">{t.annualBudget}</th><th className="text-right">{t.budgetUsed}</th><th className="text-right">{t.remainingBudget}</th></tr></thead>
+                          <tbody>{storage.getContractBudgets(c.id).map(year=><tr key={year.id} className="border-t border-slate-100">
+                            <td className="py-2">{year.periodNumber || 1}<span className="block text-slate-500">{year.periodStart} → {year.periodEnd}</span></td>
+                            <td className="text-right">{storage.formatCurrency(year.annualAmount)}</td><td className="text-right">{storage.formatCurrency(year.totalUsed)}</td><td className="text-right">{storage.formatCurrency(year.remainingAmount)}</td>
+                          </tr>)}</tbody>
+                        </table>
                       </div>
 
                       {c.notes && (

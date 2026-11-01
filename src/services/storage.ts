@@ -1,3 +1,4 @@
+import {businessToday, isCalendarDate, projectAnnualBudgets, selectAnnualBudget, refreshBudgetTotals} from './annualBudgets';
 import { accountRequest, clearRemoteSession, remoteSession, type AccountResponse } from './remoteAccounts';
 import { resolveBackendUrl, isRetiredBackend, DEPLOYED_BACKEND_URL } from '../config/backend';
 import { businessFingerprint, validateBusinessSnapshot, type BusinessSnapshot } from './businessData';
@@ -83,6 +84,22 @@ class StorageService {
   private currentUser: User | null = null;
   private listeners: (() => void)[] = [];
   private sheetLoadSequence = 0;
+  private annualBudgetsPrepared = false;
+  private budgetCalendarDay = businessToday();
+  private ensureAnnualBudgets() {
+    if(this.annualBudgetsPrepared)return;
+    const clean=!this.hasUnsyncedBusinessData();
+    const projected=projectAnnualBudgets(this.contracts,this.budgets,this.transactions);
+    if(JSON.stringify(projected.budgets)!==JSON.stringify(this.budgets)||JSON.stringify(projected.transactions)!==JSON.stringify(this.transactions)){
+      this.budgets=projected.budgets;this.transactions=projected.transactions;this.persistAll();
+      if(clean && this.settings.appsScriptUrl)safeSetItem('mkt_sheet_business_baseline_v1',JSON.stringify({endpoint:this.settings.appsScriptUrl,fingerprint:businessFingerprint(this.businessSnapshot())}));
+    }
+    this.annualBudgetsPrepared=true;
+  }
+  public refreshBudgetCalendar() {
+    if(this.budgetCalendarDay===businessToday())return;
+    this.budgetCalendarDay=businessToday();this.recalculateContractStatuses();this.notify();
+  }
   private sheetDataState: {status:'idle'|'loading'|'loaded'|'error'|'local';message:string} = {status:'idle',message:''};
 
   public getSheetDataState() { return this.sheetDataState; }
@@ -132,6 +149,7 @@ class StorageService {
     const endpoint=this.settings.appsScriptUrl, actor=this.currentUser;
     const token=remoteSession(endpoint)?.token;
     if(!actor || !token)return {success:false,message:'Sign in to Sheets first.'};
+    this.ensureAnnualBudgets();
     const sequence=++this.sheetLoadSequence;
     const publish=(status:typeof this.sheetDataState.status,message:string,success=false)=>{
       if(sequence===this.sheetLoadSequence){this.sheetDataState={status,message};this.notify();}
@@ -170,6 +188,7 @@ class StorageService {
   }
 
   public init() {
+    this.annualBudgetsPrepared=false;
     try {
       const storedSettings = safeGetItem(STORAGE_KEYS.SETTINGS);
       this.settings = { ...INITIAL_SETTINGS, ...(storedSettings ? JSON.parse(storedSettings) : {}) };
@@ -324,6 +343,7 @@ class StorageService {
   }
 
   private persistAll() {
+    this.annualBudgetsPrepared=false;
     safeSetItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(this.customers));
     safeSetItem(STORAGE_KEYS.CONDITIONS, JSON.stringify(this.conditions));
     safeSetItem(STORAGE_KEYS.CONTRACTS, JSON.stringify(this.contracts));
@@ -479,6 +499,7 @@ class StorageService {
     if (this.currentUser?.role !== 'ADMIN') {
       throw new Error('Only Admin can sync the complete database to Google Sheets.');
     }
+    this.ensureAnnualBudgets();
     return JSON.parse(JSON.stringify({
       spreadsheetId: this.settings.spreadsheetId,
       customers: this.customers,
@@ -512,6 +533,7 @@ class StorageService {
 
   public recalculateBudgetsByPricePerCrate(newPrice: number): { success: boolean; updatedCount: number } {
     if(!this.canManageSettings())return {success:false,updatedCount:0};
+    this.ensureAnnualBudgets();
     this.settings.pricePerCrate = Number(newPrice);
     let updatedCount = 0;
 
@@ -521,6 +543,7 @@ class StorageService {
       const budget = this.getBudgetForCustomer(cond.customerCode);
       if (budget && cond.conditionQuantity > 0) {
         budget.annualAmount = cond.conditionQuantity * newPrice;
+        this.budgets.filter(year=>year.contractId===budget.contractId&&(year.periodNumber||1)>(budget.periodNumber||1)).forEach(year=>{year.annualAmount=budget.annualAmount;refreshBudgetTotals(year);});
         budget.remainingAmount = budget.annualAmount - budget.totalUsed;
         budget.utilizationPercentage = budget.annualAmount > 0
           ? Math.round((budget.totalUsed / budget.annualAmount) * 1000) / 10
@@ -562,32 +585,12 @@ class StorageService {
 
   // --- Contract Status Lifecycle Calculation ---
   private recalculateContractStatuses() {
-    const now = new Date();
-    const alertThreshold = this.settings.contractAlertDays * 24 * 60 * 60 * 1000;
-
+    const today = businessToday();
     let modified = false;
     this.contracts.forEach((c) => {
-      const expDate = new Date(c.expiringOn);
-      const diffTime = expDate.getTime() - now.getTime();
-
-      let newStatus: ContractStatus = c.status;
-      if (diffTime < 0) {
-        newStatus = 'EXPIRED';
-      } else if (diffTime <= alertThreshold) {
-        newStatus = 'EXPIRING_SOON';
-      } else {
-        const commDate = new Date(c.commencingOn);
-        if (now.getTime() < commDate.getTime()) {
-          newStatus = 'UPCOMING';
-        } else {
-          newStatus = 'ACTIVE';
-        }
-      }
-
-      if (newStatus !== c.status) {
-        c.status = newStatus;
-        modified = true;
-      }
+      const days = (Date.parse(c.expiringOn)-Date.parse(today))/86400000;
+      const newStatus:ContractStatus = today>c.expiringOn ? 'EXPIRED' : today<c.commencingOn ? 'UPCOMING' : days<=this.settings.contractAlertDays ? 'EXPIRING_SOON' : 'ACTIVE';
+      if(newStatus!==c.status){c.status=newStatus;modified=true;}
     });
 
     if (modified) {
@@ -652,8 +655,17 @@ class StorageService {
     return list.find((c) => c.status === 'ACTIVE' || c.status === 'EXPIRING_SOON') || list[0];
   }
 
-  public getContractBudget(contractId: string): Budget | undefined {
-    return this.budgets.find((b) => b.contractId === contractId);
+  public getContractBudgets(contractId:string):Budget[] {
+    this.ensureAnnualBudgets();
+    return this.budgets.filter(budget=>budget.contractId===contractId).sort((a,b)=>(a.periodNumber||1)-(b.periodNumber||1));
+  }
+  public getContractBudget(contractId: string, date=businessToday(), clamp=true): Budget | undefined {
+    const contract=this.contracts.find(row=>row.id===contractId);
+    const eligible=this.getContractBudgets(contractId).filter(budget=>!budget.periodStart||!contract||budget.periodStart>=contract.commencingOn&&budget.periodStart<=contract.expiringOn);
+    return selectAnnualBudget(eligible,date,clamp);
+  }
+  public getContractForDate(customerCode:string,date:string):Contract|undefined {
+    return this.getCustomerContracts(customerCode).find(contract=>date>=contract.commencingOn&&date<=contract.expiringOn);
   }
 
   public getBudgetForCustomer(customerCode: string): Budget | undefined {
@@ -671,7 +683,8 @@ class StorageService {
     search?: string;
     status?: 'ACTIVE' | 'CANCELLED';
   }): BudgetTransaction[] {
-    let list = this.transactions;
+    this.ensureAnnualBudgets();
+    let list = [...this.transactions];
 
     // RBAC: Team User restriction
     if (this.currentUser && this.currentUser.role !== 'ADMIN' && this.currentUser.team !== 'ALL') {
@@ -733,12 +746,14 @@ class StorageService {
       return { success: false, message: 'ທ່ານບໍ່ມີສິດບັນທຶກລາຍຈ່າຍໃຫ້ລູກຄ້າທີມອື່ນ (Unauthorized)' };
     }
 
-    const contract = this.getActiveContract(data.customerCode);
+    const date=data.date||businessToday();
+    if(!isCalendarDate(date))return {success:false,message:'ວັນທີລາຍຈ່າຍບໍ່ຖືກຕ້ອງ (Invalid date)'};
+    const contract = this.getContractForDate(data.customerCode,date);
     if (!contract) {
       return { success: false, message: 'ບໍ່ພົບສັນຍາທີ່ກຳລັງດຳເນີນການສຳລັບລູກຄ້ານີ້' };
     }
 
-    const budget = this.getContractBudget(contract.id);
+    const budget = this.getContractBudget(contract.id,date,false);
     if (!budget) {
       return { success: false, message: 'ບໍ່ພົບງົບປະມານສຳລັບຮອບສັນຍານີ້' };
     }
@@ -767,7 +782,7 @@ class StorageService {
     const txnId = `TXN-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 90 + 10)}`;
     const newTxn: BudgetTransaction = {
       id: txnId,
-      date: data.date || new Date().toISOString().slice(0, 10),
+      date,
       customerCode: customer.code,
       customerName: customer.name,
       team: customer.team,
@@ -817,6 +832,7 @@ class StorageService {
     txnId: string,
     reason: string
   ): { success: boolean; message: string } {
+    this.ensureAnnualBudgets();
     const txn = this.transactions.find((t) => t.id === txnId);
     if (!txn) {
       return { success: false, message: 'ບໍ່ພົບລາຍການນີ້' };
@@ -939,6 +955,8 @@ class StorageService {
     if (this.currentUser?.role !== 'ADMIN') {
       return { success: false, message: 'ສະເພາະ Admin ເທົ່ານັ້ນທີ່ສາມາດປັບແກ້ງົບປະມານໄດ້' };
     }
+    this.ensureAnnualBudgets();
+    if(!Number.isFinite(Number(newAmount))||Number(newAmount)<0)return {success:false,message:'Invalid budget amount'};
 
     const budget = this.budgets.find((b) => b.id === budgetId);
     if (!budget) {
@@ -948,6 +966,7 @@ class StorageService {
 
     const oldAmount = budget.annualAmount;
     budget.annualAmount = Number(newAmount);
+    this.budgets.filter(year=>year.contractId===budget.contractId&&(year.periodNumber||1)>(budget.periodNumber||1)).forEach(year=>{year.annualAmount=budget.annualAmount;refreshBudgetTotals(year);});
     budget.remainingAmount = budget.annualAmount - budget.totalUsed;
     budget.utilizationPercentage =
       budget.annualAmount > 0
@@ -1209,8 +1228,7 @@ class StorageService {
     const expiredContracts = filteredContracts.filter((c) => c.status === 'EXPIRED').length;
 
     // Budgets for active contracts
-    const contractIds = new Set(filteredContracts.map((c) => c.id));
-    const filteredBudgets = this.budgets.filter((b) => contractIds.has(b.contractId));
+    const filteredBudgets = filteredCustomers.map(customer=>this.getBudgetForCustomer(customer.code)).filter((budget):budget is Budget=>Boolean(budget));
 
     const totalAnnualBudget = filteredBudgets.reduce((acc, b) => acc + (b.annualAmount || 0), 0);
     const totalBudgetUsed = filteredBudgets.reduce((acc, b) => acc + (b.totalUsed || 0), 0);
@@ -1227,7 +1245,7 @@ class StorageService {
     teams.forEach((t) => {
       const tCusts = this.getCustomers().filter((c) => c.team === t);
       const tCustCodes = new Set(tCusts.map((c) => c.code));
-      const tBudgets = this.budgets.filter((b) => tCustCodes.has(b.customerCode));
+      const tBudgets = filteredBudgets.filter((b) => tCustCodes.has(b.customerCode));
 
       const annual = tBudgets.reduce((acc, b) => acc + (b.annualAmount || 0), 0);
       const used = tBudgets.reduce((acc, b) => acc + (b.totalUsed || 0), 0);
@@ -1244,8 +1262,9 @@ class StorageService {
     });
 
     // Category usage for active transactions
+    const currentBudgetIds=new Set(filteredBudgets.map(budget=>budget.id));
     const filteredTxns = this.transactions.filter(
-      (t) => customerCodes.has(t.customerCode) && t.status === 'ACTIVE'
+      (t) => customerCodes.has(t.customerCode) && currentBudgetIds.has(t.budgetId) && t.status === 'ACTIVE'
     );
     const categoryUsage: Record<string, number> = {};
     filteredTxns.forEach((t) => {
@@ -1629,6 +1648,7 @@ class StorageService {
           budget.remainingAmount=budget.annualAmount-budget.totalUsed;
           budget.utilizationPercentage=budget.annualAmount>0?Math.round(budget.totalUsed/budget.annualAmount*1000)/10:0;
           budget.status=budget.totalUsed>budget.annualAmount?'EXCEEDED':budget.utilizationPercentage>=100?'CRITICAL_100':budget.utilizationPercentage>=80?'WARNING_80':'NORMAL';
+          this.budgets.filter(year=>year.contractId===budget.contractId&&(year.periodNumber||1)>(budget.periodNumber||1)).forEach(year=>{year.annualAmount=budget.annualAmount;year.team=team;refreshBudgetTotals(year);});
           budget.updatedAt=new Date().toISOString();
         }
       }
