@@ -6,6 +6,7 @@
 
 import { storage } from './storage';
 import { remoteSession } from './remoteAccounts';
+import {publishWithLockRetry,type SheetPublishSource} from './sheetPublish';
 
 export interface GasResponse<T = unknown> {
   success: boolean;
@@ -139,38 +140,35 @@ export class GasService {
   /**
    * Sync complete local state to Google Sheets via GAS
    */
-  public static async syncAllToGoogleSheets(scriptUrl?: string): Promise<{
+  public static async syncAllToGoogleSheets(scriptUrl?: string,source:SheetPublishSource={}): Promise<{
     success: boolean;
     message: string;
   }> {
-    const settings = storage.getSettings();
-    if (!(scriptUrl || settings.appsScriptUrl)) {
-      return {
-        success: false,
-        message: 'Please set your Google Apps Script Web App URL first in Settings.'
-      };
-    }
-
-    let payload: Record<string, unknown>;
-    try {
-      payload = storage.getGoogleSheetsSnapshot();
-    } catch (error) {
-      return { success: false, message: error instanceof Error ? error.message : String(error) };
-    }
-
+    const settings=storage.getSettings(),endpoint=(scriptUrl||settings.appsScriptUrl).trim();
+    if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/?#]+\/exec$/.test(endpoint))return {success:false,message:'Use the deployed Google Apps Script URL ending in /exec.'};
+    if(!storage.canManageSettings())return {success:false,message:'Admin permission required'};
+    const actor=storage.getCurrentUser()!,token=remoteSession(endpoint)?.token;
+    const sameAccount=()=>storage.getCurrentUser()?.id===actor.id&&storage.canManageSettings()&&remoteSession(endpoint)?.token===token&&storage.getSettings().appsScriptUrl===settings.appsScriptUrl;
     try{storage.beginBulkPublish();}catch(error){return {success:false,message:error instanceof Error?error.message:String(error)};}
-    let res:GasResponse;
-    try{res=await this.sendToGas('SYNC_BULK_DATA',payload,scriptUrl);}finally{storage.endBulkPublish();}
-    if (res.success === true && (res.syncVersion !== 2 || res.annualBudgetVersion !== 1)) {
-      return { success: false, message: 'The backend is still the old version. Deploy the unified Code.gs as a new Web App version, then sync again.' };
-    }
-    if(res.success===true){
-      storage.markBusinessSynced((scriptUrl || settings.appsScriptUrl).trim(),payload as unknown as import('./businessData').BusinessSnapshot,res.businessRevision);
-      storage.markSharedSettingsPublished(payload.settings);
-    }
-    return {
-      success: res.success === true,
-      message: res.message || res.error || (res.success ? 'Synced successfully to Google Sheets!' : 'Sync failed.')
-    };
+    try{
+      const pending=storage.getPendingSheetPublish(endpoint)||storage.savePendingSheetPublish(endpoint,storage.getGoogleSheetsSnapshot(),source);
+      storage.setSheetPublishMessage('ກຳລັງສົ່ງຂໍ້ມູນໄປ Sheet…');
+      const res=await publishWithLockRetry(
+        ()=>sameAccount()?this.sendToGas('SYNC_BULK_DATA',pending.payload,endpoint):Promise.resolve({success:false,message:'Account changed. The pending publication is retained for its original account.'}),
+        (attempt,delayMs)=>storage.setSheetPublishMessage(`Sheet ກຳລັງໃຊ້ງານ. ຈະລອງສົ່ງຊ້ຳ ${attempt}/3 ໃນ ${delayMs/1000} ວິນາທີ…`)
+      );
+      if(!sameAccount())return {success:false,message:'Account changed. The pending publication is retained for its original account.'};
+      if(res.success===true&&(res.syncVersion!==2||res.annualBudgetVersion!==1)){
+        const message='The backend is still the old version. Deploy the unified Code.gs as a new Web App version, then sync again.';storage.setSheetPublishMessage(message);return {success:false,message};
+      }
+      const message=res.message||res.error||(res.success?'Synced successfully to Google Sheets!':'Sync failed.');
+      if(res.success){
+        storage.markBusinessSynced(endpoint,pending.payload as unknown as import('./businessData').BusinessSnapshot,res.businessRevision);
+        storage.markSharedSettingsPublished(pending.payload.settings);
+        storage.completeSheetPublish(endpoint,pending.id);
+      }else storage.setSheetPublishMessage(message);
+      return {success:res.success===true,message};
+    }catch(error){const message=error instanceof Error?error.message:String(error);storage.setSheetPublishMessage(message);return {success:false,message};}
+    finally{storage.endBulkPublish();}
   }
 }

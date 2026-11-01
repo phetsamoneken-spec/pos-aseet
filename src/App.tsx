@@ -51,7 +51,7 @@ export default function App() {
     const refresh=async()=>{
       storage.refreshBudgetCalendar();
       if(currentUser && backendUrl && storage.hasRemoteUserSession()){
-        if(storage.getSheetDataState().status==='loading'||storage.getBusinessWriteState().status==='saving')return;
+        if(storage.getPendingSheetPublish()||storage.getSheetDataState().status==='loading'||storage.getBusinessWriteState().status==='saving')return;
         if(storage.getPendingBusinessWrite()){const saved=await storage.retryPendingBusinessWrite();if(!saved.success)return;}
         if(storage.hasUnsyncedBusinessData()){const common=await storage.refreshSharedSettings();if(!common.success)return;}
         await storage.loadBusinessFromSheets(false,true);

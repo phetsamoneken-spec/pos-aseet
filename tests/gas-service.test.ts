@@ -8,7 +8,10 @@ const localStorageMock = {
 Object.assign(globalThis, { localStorage: localStorageMock, window: { localStorage: localStorageMock } });
 const { storage } = await import('../src/services/storage');
 const { GasService } = await import('../src/services/gasService');
+const oldLog=storage.getLogs(1)[0];
+values.set('mkt_activity_logs_v1',JSON.stringify([{...oldLog,id:'LOG-legacy-duplicate',action:'IMPORT_EXCEL_CUSTOMERS'},{...oldLog,id:'LOG-legacy-duplicate',action:'LOAD_FROM_SHEETS'}]));storage.init();
 const snapshot = storage.getGoogleSheetsSnapshot();
+assert.equal(snapshot.logs.length,2,'legacy audit events are preserved');assert.equal(new Set(snapshot.logs.map((log:{id:string})=>log.id)).size,2,'duplicate legacy log IDs must not prevent Excel publication');
 for (const name of ['customers', 'conditions', 'contracts', 'budgets', 'transactions', 'logs']) {
   assert.ok(snapshot[name].length > 0, name);
 }

@@ -53,9 +53,11 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
 
   const processFile = async (file: File) => {
     if(!storage.canManageSettings())return;
+    if(storage.getPendingSheetPublish()){setErrorMsg(lang==='lo'?'ມີຂໍ້ມູນລໍສົ່ງໄປ Sheet. ກົດລອງສົ່ງຊ້ຳ ຫຼືຍົກເລີກລາຍການນັ້ນກ່ອນ.':'Retry or cancel the pending Sheet publication before choosing a new file.');return;}
     setImportedCount(null);
     setErrorMsg(null);
     setFileName(file.name);
+    setParsedRows(null);
     setIsLoading(true);
 
     try {
@@ -93,17 +95,19 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
   };
 
   const handleConfirmImport = async () => {
-    if(!storage.canManageSettings()||isLoading||!parsedRows?.length)return;
+    if(!storage.canManageSettings()||isLoading||!parsedRows?.length&&!storage.getPendingSheetPublish())return;
     setIsLoading(true);setErrorMsg(null);
     try{
-      let count=importedCount;
+      const pending=storage.getPendingSheetPublish();
+      let count=pending?.importedCount??(pending?(pending.payload.customers as {status:string}[]).filter(row=>row.status!=='DELETED').length:importedCount);
       if(count===null){
+        if(!parsedRows?.length)return;
         const result=storage.importCustomersFromRawRows(parsedRows,{replaceAll,defaultAnnualBudget:defaultBudget});
         if(!result.success){setErrorMsg(result.errors.join('\n')||'Import failed');return;}
         count=result.importedCount;setImportedCount(count);
       }
       if(storage.getSettings().appsScriptUrl){
-        const published=await GasService.syncAllToGoogleSheets();
+        const published=await GasService.syncAllToGoogleSheets(undefined,{fileName:fileName||undefined,importedCount:count});
         if(!published.success){setErrorMsg('ນຳເຂົ້າໃນ browser ແລ້ວ ແຕ່ຍັງບໍ່ສົ່ງໄປ Sheet. ກົດລອງອີກຄັ້ງ: '+published.message);return;}
       }
       onSuccess(count);
@@ -193,6 +197,7 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-6 space-y-5">
+          {isLoading&&storage.getSheetPublishState().pending&&<p role="status" className="rounded-xl bg-blue-50 p-3 text-xs text-blue-800">{storage.getSheetPublishState().message}</p>}
           
           {errorMsg && (
             <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2.5">
@@ -356,7 +361,7 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
             <button
               type="button"
               onClick={handleConfirmImport}
-              disabled={isLoading || !parsedRows || parsedRows.length === 0}
+              disabled={isLoading || (!parsedRows?.length&&!storage.getPendingSheetPublish())}
               className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-600/30 transition cursor-pointer active:scale-95"
             >
               {isLoading ? (
@@ -364,7 +369,7 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
               ) : (
                 <Upload className="w-4 h-4" />
               )}
-              <span>{importedCount!==null ? (lang==='lo'?'ລອງສົ່ງໄປ Sheet ອີກຄັ້ງ':'Retry publishing to Sheet') : (lang === 'lo' ? 'ນຳເຂົ້າ ແລະສົ່ງໄປ Sheet' : 'Import and publish to Sheet')}</span>
+              <span>{importedCount!==null||storage.getPendingSheetPublish() ? (lang==='lo'?'ລອງສົ່ງໄປ Sheet ອີກຄັ້ງ':'Retry publishing to Sheet') : (lang === 'lo' ? 'ນຳເຂົ້າ ແລະສົ່ງໄປ Sheet' : 'Import and publish to Sheet')}</span>
             </button>
           </div>
 

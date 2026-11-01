@@ -25,6 +25,7 @@ import {
   BudgetStatus
 } from '../types';
 import { generateSeedData, INITIAL_SETTINGS, INITIAL_USERS } from '../data/seedData';
+import {encodeSheetPublication,decodeSheetPublication,type PendingSheetPublish} from './sheetPublish';
 
 const STORAGE_KEYS = {
   CUSTOMERS: 'mkt_customers_v1',
@@ -86,12 +87,35 @@ class StorageService {
   private currentUser: User | null = null;
   private listeners: (() => void)[] = [];
   private sheetLoadSequence = 0;
+  private sheetPublishMessage='';
+  private sheetPublishCache:{key:string;text:string;value:PendingSheetPublish}|null=null;
+  private sheetPublishKey(endpoint=this.settings.appsScriptUrl){return this.currentUser?'foc-pending-publish-v1:'+this.currentUser.id+':'+endpoint:'';}
+  public getPendingSheetPublish(endpoint=this.settings.appsScriptUrl):import('./sheetPublish').PendingSheetPublish|null {
+    try{const key=this.sheetPublishKey(endpoint),text=safeGetItem(key);if(!text)return null;const value=this.sheetPublishCache?.key===key&&this.sheetPublishCache.text===text?this.sheetPublishCache.value:decodeSheetPublication(text);if(value?.actorId!==this.currentUser?.id||value.endpoint!==endpoint||!value.payload||!Array.isArray(value.payload.customers))return null;this.sheetPublishCache={key,text,value};return value;}catch{return null;}
+  }
+  public savePendingSheetPublish(endpoint:string,payload:Record<string,unknown>,source:import('./sheetPublish').SheetPublishSource={}){
+    if(!this.canManageSettings())throw Error('Admin permission required');
+    const value:import('./sheetPublish').PendingSheetPublish={...source,id:newBusinessWriteId(),actorId:this.currentUser!.id,endpoint,payload,createdAt:new Date().toISOString()};
+    const key=this.sheetPublishKey(endpoint),text=encodeSheetPublication(value);
+    try{window.localStorage.setItem(key,text);if(window.localStorage.getItem(key)!==text)throw Error('Storage unavailable');}catch{throw Error('Browser storage is full or unavailable. Download a backup before publishing.');}
+    safeSetItem(key,text);this.sheetPublishCache={key,text,value};this.sheetPublishMessage='';this.notify();return value;
+  }
+  public completeSheetPublish(endpoint:string,id:string){if(this.getPendingSheetPublish(endpoint)?.id===id){safeRemoveItem(this.sheetPublishKey(endpoint));this.sheetPublishMessage='';this.notify();}}
+  public setSheetPublishMessage(message:string){this.sheetPublishMessage=message;this.notify();}
+  public getSheetPublishState(){return {pending:this.getPendingSheetPublish(),saving:this.bulkPublishing,message:this.sheetPublishMessage};}
+  public discardPendingSheetPublish(){
+    const pending=this.getPendingSheetPublish();if(!pending||this.bulkPublishing||!this.canManageSettings())return false;
+    const key='foc-saved-publish-v1:'+pending.id,text=encodeSheetPublication(pending);
+    try{window.localStorage.setItem(key,text);if(window.localStorage.getItem(key)!==text)return false;}catch{return false;}
+    this.completeSheetPublish(pending.endpoint,pending.id);return true;
+  }
   private businessWriteFlight:Promise<BusinessWriteResult>|null=null;
   private writeFeedback:{key:string;status:BusinessWriteState['status'];message:string}|null=null;
   private recoveryFlight:Promise<BusinessWriteResult>|null=null;
   private recoveryPointer(){return 'foc-recovery-latest:'+this.currentWriteKey();}
   public getLocalRecoveryBackup():BrowserRecovery|null {try{const key=safeGetItem(this.recoveryPointer());return key?JSON.parse(safeGetItem(key)||'null'):null;}catch{return null;}}
   public async recoverLegacyCache(reason='LOAD_SHEET'):Promise<BusinessWriteResult>{
+    if(this.getPendingSheetPublish())return {success:false,message:'Finish or cancel the pending Sheet publication first. Uploaded data is retained.'};
     if(this.recoveryFlight)return this.recoveryFlight;
     const actor=this.currentUser,endpoint=this.settings.appsScriptUrl,token=remoteSession(endpoint)?.token;
     if(!actor||!token)return {success:false,message:'Login again to back up local data.'};
@@ -151,9 +175,10 @@ class StorageService {
     return {status:feedback?.status||(pending?'error':'idle'),message:feedback?.message||(pending?'ມີການບັນທຶກທີ່ລໍສົ່ງໄປ Sheet (Pending Sheet save)':''),pending};
   }
   public beginBulkPublish(){if(this.getPendingBusinessWrite()||this.businessWriteFlight||this.recoveryFlight||this.bulkPublishing)throw Error('Finish the pending Sheet save before importing or publishing a full snapshot.');this.bulkPublishing=true;}
-  public endBulkPublish(){this.bulkPublishing=false;}
+  public endBulkPublish(){this.bulkPublishing=false;this.notify();}
   public async commitBusinessChange(kind:BusinessWriteKind,data:Record<string,unknown>):Promise<BusinessWriteResult>{
     if(!this.currentUser)return {success:false,message:'Sign in first'};
+    if(this.getPendingSheetPublish())return {success:false,message:'Finish or cancel the pending Sheet publication first. Uploaded data is retained.'};
     if(!this.settings.appsScriptUrl){
       switch(kind){
         case 'ADD_CUSTOMER':return this.addCustomer(data as Parameters<StorageService['addCustomer']>[0]);
@@ -293,6 +318,7 @@ class StorageService {
     const endpoint=this.settings.appsScriptUrl, actor=this.currentUser;
     const token=remoteSession(endpoint)?.token;
     if(!actor || !token)return {success:false,message:'Sign in to Sheets first.'};
+    if(this.getPendingSheetPublish())return {success:false,message:'Finish or cancel the pending Sheet publication first. Uploaded data is retained.'};
     if(this.bulkPublishing)return {success:false,message:'Wait for the Excel/Sheet publication to finish.'};
     this.ensureAnnualBudgets();
     if(this.recoveryFlight)return this.recoveryFlight;
@@ -662,6 +688,9 @@ class StorageService {
     this.ensureAnnualBudgets();
     let revision;try{revision=JSON.parse(this.businessBaselineText||'null')?.revision;}catch{}
     if(this.settings.appsScriptUrl&&!revision)throw Error('Load the latest Sheet before full publication. Back up existing local edits first.');
+    const logIds=new Set<string>();let repaired=false;
+    this.logs=this.logs.map(log=>{let id=log.id;if(!id||logIds.has(id)){id='LOG-'+crypto.randomUUID();repaired=true;}logIds.add(id);return id===log.id?log:{...log,id};});
+    if(repaired)safeSetItem(STORAGE_KEYS.LOGS,JSON.stringify(this.logs));
     return JSON.parse(JSON.stringify({
       expectedBusinessRevision:revision,
       spreadsheetId: this.settings.spreadsheetId,
@@ -1358,7 +1387,7 @@ class StorageService {
 
   public logAction(action: string, details: string) {
     const log: ActivityLog = {
-      id: `LOG-${Date.now().toString().slice(-6)}`,
+      id: 'LOG-'+crypto.randomUUID(),
       timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
       user: this.currentUser?.username || 'system',
       role: this.currentUser?.role || 'ADMIN',
@@ -1642,6 +1671,7 @@ class StorageService {
     importedCount: number;
     errors: string[];
   } {
+    if(this.getPendingSheetPublish())return {success:false,importedCount:0,errors:['Finish or cancel the pending Sheet publication first']};
     if(this.getPendingBusinessWrite()||this.recoveryFlight)return {success:false,importedCount:0,errors:['Finish the pending Sheet save first']};
     if(!this.canManageSettings())return {success:false,importedCount:0,errors:['Admin permission required']};
     if (rows.length < 1) {
