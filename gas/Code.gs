@@ -37,6 +37,8 @@ function syncCell_(value) {
 
 function planSyncTable_(ss, table, records) {
   if (!Array.isArray(records)) throw new Error(table[0] + ' must be an array');
+  const removed=deletedCustomerCodes_(ss);
+  if(['customers','conditions','contracts','budgets','transactions'].indexOf(table[0])>=0)records=records.filter(function(record){return !removed.has(String(table[0]==='customers'?record.code:record.customerCode));});
   const sheet = ss.getSheetByName(table[1]);
   const existing = sheet && sheet.getLastRow() > 0 ? sheet.getDataRange().getValues() : [];
   const formulas = existing.length ? sheet.getDataRange().getFormulas() : [];
@@ -2061,7 +2063,8 @@ function readBusinessData_(token) {
     });
   }
   const snapshot={}; SYNC_TABLES.slice(0,5).forEach(function(table){snapshot[table[0]]=read(table);});
-  snapshot.customers=snapshot.customers.filter(function(customer){return scope==='ALL' || customer.team===scope;}).map(function(customer){
+  const removedCustomers=deletedCustomerCodes_(ss);
+  snapshot.customers=snapshot.customers.filter(function(customer){return !removedCustomers.has(String(customer.code))&&(scope==='ALL' || customer.team===scope);}).map(function(customer){
     if (!/^B[1-7]$/.test(customer.team)) throw new Error('CUSTOMERS: invalid Team for '+customer.code);
     customer.status=customer.status || 'ACTIVE'; customer.mde=customer.mde || 'MDE-'+customer.team;
     return customer;
@@ -2076,7 +2079,7 @@ function readBusinessData_(token) {
   snapshot.transactions.forEach(function(row){row.status=row.status || 'ACTIVE';});
   const annual=projectAnnualBudgets(snapshot.contracts,snapshot.budgets,snapshot.transactions);
   snapshot.budgets=annual.budgets;snapshot.transactions=annual.transactions;
-  return {success:true,migratedFromSpreadsheetId:databaseSetting_(ss,'migrationSourceId'),businessRevision:digest_(JSON.stringify(snapshot)),annualBudgetVersion:1,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
+  return {success:true,deletionVersion:1,migratedFromSpreadsheetId:databaseSetting_(ss,'migrationSourceId'),businessRevision:digest_(JSON.stringify(snapshot)),annualBudgetVersion:1,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
 }
 
 
@@ -2295,7 +2298,9 @@ function replayBusinessWrite_(sheet,parts){
  if(parts.length!==Number(first[6]))throw new Error('Incomplete APP_WRITES journal; contact Admin');
  const text=parts.slice().sort(function(a,b){return Number(a.row[5])-Number(b.row[5]);}).map(function(p){return p.row[7];}).join('');
  if(digest_(text)!==first[3])throw new Error('APP_WRITES checksum mismatch; contact Admin');
- const plan=JSON.parse(text),result=handleBulkSync(plan.tables);
+ const plan=JSON.parse(text);
+ if(plan.deletion)applyCustomerDeletion_(getSpreadsheet(),String(first[0]),plan.actor,plan.deletion);
+ const result=handleBulkSync(plan.tables);
  if(!result.success)throw new Error(result.error||result.message||'Sheet write incomplete; retry the same operation');
  if(plan.changes)appendChangeHistory_(getSpreadsheet(),String(first[0]),plan.actor||[String(first[1]),'user'],plan.action||'WRITE',plan.changes);
  parts.forEach(function(part){sheet.getRange(part.index,5).setValue('DONE');});SpreadsheetApp.flush();
@@ -2310,7 +2315,7 @@ function writeDates_(data){if(!isCalendarDate(data.commencingOn)||!isCalendarDat
 function writePatch_(snapshot,codes){
  const set=new Set(codes),patch={};['customers','conditions','contracts','budgets','transactions'].forEach(function(key){patch[key]=snapshot[key].filter(function(row){return set.has(key==='customers'?row.code:row.customerCode);});});return patch;
 }
-function buildBusinessWrite_(kind,p,actor,snapshot,id){
+function buildBusinessWrite_(kind,p,actor,snapshot,id,onlyCodes){
  const original=JSON.parse(JSON.stringify(snapshot));
  const admin=actor[5]==='ADMIN',now=new Date().toISOString(),tables={},codes=[],result={};
  function requireAdmin(){if(!admin)throw new Error('Admin permission required');}
@@ -2321,6 +2326,7 @@ function buildBusinessWrite_(kind,p,actor,snapshot,id){
   if(!/^B[1-7]$/.test(team)||!admin&&team!==String(actor[6]))throw new Error('Permission denied for this team');
   // Check the whole ID namespace without returning another team's records.
   const sheet=getSpreadsheet().getSheetByName('CUSTOMERS'),rows=sheet?sheet.getDataRange().getValues():[];
+  if(deletedCustomerCodes_(getSpreadsheet()).has(code))throw new Error('This customer code was deleted; use a new code to add a new store');
   if(rows.slice(1).some(function(r){return String(r[0]).trim().toUpperCase()===code;}))throw new Error('Duplicate Customer Code');
   const c={code:code,name:name,team:team,mde:'MDE-'+team,phone:String(p.phone||''),address:String(p.address||''),province:String(p.province||''),status:'ACTIVE',createdAt:businessToday(),updatedAt:now,deletedAt:''};
   const quantity=writeNumber_(p.conditionQty,'condition quantity'),price=readSharedSettings_(getSpreadsheet()).pricePerCrate||240000;
@@ -2342,9 +2348,9 @@ function buildBusinessWrite_(kind,p,actor,snapshot,id){
   tables.budgets=snapshot.budgets.filter(function(b){return b.customerCode===code;}).map(function(b){b.team=team;if(admin&&current&&p.annualBudget!==undefined&&b.contractId===current.contractId&&(b.periodNumber||1)>=(current.periodNumber||1)){b.annualAmount=writeNumber_(p.annualBudget,'annual budget');b.updatedAt=now;refreshBudgetTotals(b);}return b;});
   tables.transactions=snapshot.transactions.filter(function(t){return t.customerCode===code;}).map(function(t){return Object.assign({},t,{customerName:tables.customers[0].name,team:team});});codes.push(code);result.entityId=code;
  }else if(kind==='DELETE_CUSTOMER'){
-  const code=String(p.customerCode),c=customer(code);tables.customers=[Object.assign({},c,{status:'DELETED',updatedAt:now,deletedAt:now})];codes.push(code);result.entityId=code;
+  const code=String(p.customerCode),c=snapshot.customers.find(function(row){return row.code===code;});if(!c)throw new Error('Customer not found');codes.push(code);result.entityId=code;
  }else if(kind==='DELETE_ALL_CUSTOMERS'){
-  requireAdmin();tables.customers=snapshot.customers.map(function(c){codes.push(c.code);return Object.assign({},c,{status:'DELETED',updatedAt:now,deletedAt:now});});
+  requireAdmin();snapshot.customers.forEach(function(c){if(!onlyCodes||onlyCodes.indexOf(c.code)>=0)codes.push(c.code);});
  }else if(kind==='ADD_TRANSACTION'){
   const code=String(p.customerCode),c=customer(code),date=p.date||businessToday(),amount=writeNumber_(p.amount,'transaction amount');
   if(!isCalendarDate(date)||amount<=0)throw new Error('Invalid transaction date or amount');
@@ -2390,16 +2396,21 @@ function buildBusinessWrite_(kind,p,actor,snapshot,id){
  tables.logs=[{id:'LOG-'+id,timestamp:now,user:actor[1],role:actor[5],team:admin?'ALL':actor[6],action:kind,details:codes.join(', ')}];
  // Validate all affected tables before recording a recoverable plan.
  SYNC_TABLES.filter(function(table){return tables[table[0]]!==undefined;}).forEach(function(table){planSyncTable_(getSpreadsheet(),table,tables[table[0]]);});
- return {tables:tables,codes:codes,result:result,actor:[String(actor[0]),String(actor[1])],action:kind,changes:businessChanges_(original,tables)};
+ const plan={tables:tables,codes:codes,result:result,actor:[String(actor[0]),String(actor[1])],action:kind,changes:businessChanges_(original,tables)};
+ if(kind==='DELETE_CUSTOMER'||kind==='DELETE_ALL_CUSTOMERS'){
+  plan.deletion=captureCustomerDeletion_(getSpreadsheet(),codes,now);
+  ['customers','conditions','contracts','budgets','transactions'].forEach(function(key){original[key].filter(function(row){return codes.indexOf(key==='customers'?row.code:row.customerCode)>=0;}).forEach(function(row){plan.changes.push({table:key,id:String(key==='customers'?row.code:row.id),before:row,after:null});});});
+ }
+ return plan;
 }
-function mutateBusiness_(payload,token){
+function mutateBusiness_(payload,token,onlyCodes){
  const ss=userTables_(),actor=requireSession_(ss,token,false);recoverBusinessWrites_();ensureDailyDatabaseBackup_(ss,actor);
  const id=String(payload.id||''),kind=String(payload.kind||''),data=payload.data;
  if(!/^OP-[A-Za-z0-9-]{8,100}$/.test(id)||!data||typeof data!=='object'||Array.isArray(data))throw new Error('Invalid business write request');
  const sheet=writeJournal_(),hash=digest_(JSON.stringify({kind:kind,data:data}));let parts=journalOperations_(sheet).get(id);
  if(parts){if(String(parts[0].row[1])!==String(actor[0])||parts[0].row[2]!==hash)throw new Error('Operation ID was already used');}
  else {
-  let plan;try{plan=buildBusinessWrite_(kind,data,actor,readBusinessData_(token).snapshot,id);}catch(error){return {success:false,writeVersion:1,retryable:false,message:String(error)};}
+  let plan;try{plan=buildBusinessWrite_(kind,data,actor,readBusinessData_(token).snapshot,id,onlyCodes);}catch(error){return {success:false,writeVersion:1,retryable:false,message:String(error)};}
   const text=JSON.stringify(plan),chunks=[];for(let n=0;n<text.length;){let end=Math.min(n+28000,text.length);const last=text.charCodeAt(end-1);if(end<text.length&&last>=0xD800&&last<=0xDBFF)end--;chunks.push(text.slice(n,end));n=end;}
   const now=new Date().toISOString(),rows=chunks.map(function(chunk,index){return [id,String(actor[0]),hash,digest_(text),'PREPARED',index,chunks.length,chunk,now];});
   if(sheet.getMaxRows()<sheet.getLastRow()+rows.length)sheet.insertRowsAfter(sheet.getMaxRows(),rows.length);
@@ -2407,14 +2418,17 @@ function mutateBusiness_(payload,token){
  }
  replayBusinessWrite_(sheet,parts);
  const planText=parts.slice().sort(function(a,b){return a.row[5]-b.row[5];}).map(function(p){return p.row[7];}).join(''),plan=JSON.parse(planText),read=readBusinessData_(token);
+ if((kind==='DELETE_CUSTOMER'||kind==='DELETE_ALL_CUSTOMERS')&&!plan.deletion){
+  const upgraded=mutateBusiness_({id:'OP-PHYSICAL-'+digest_(id).slice(0,40),kind:kind,data:data},token,plan.codes);return Object.assign({},upgraded,{mutationId:id});
+ }
  const patch=writePatch_(read.snapshot,plan.codes);
- return {success:true,writeVersion:1,mutationId:id,scope:read.scope,user:read.user,customerCodes:plan.codes,patch:patch,snapshot:read.snapshot,businessRevision:read.businessRevision,entityId:plan.result.entityId,message:'Saved to Google Sheet'};
+ return {success:true,deletionVersion:1,writeVersion:1,mutationId:id,scope:read.scope,user:read.user,customerCodes:plan.codes,patch:patch,snapshot:read.snapshot,businessRevision:read.businessRevision,entityId:plan.result.entityId,message:'Saved to Google Sheet'};
 }
 
 
 // The primary database is selected by private Script Properties and an owner-
 // controlled SETTINGS routing row. No private spreadsheet ID is shipped in Git.
-const CORE_DATABASE_SHEETS_=['CUSTOMERS','CUSTOMER_CONDITIONS','CONTRACTS','BUDGETS','BUDGET_TRANSACTIONS','USERS','CATEGORIES','ACTIVITY_LOG','SETTINGS','MKT_MASTER'];
+const CORE_DATABASE_SHEETS_=['CUSTOMERS','CUSTOMER_CONDITIONS','CONTRACTS','BUDGETS','BUDGET_TRANSACTIONS','USERS','CATEGORIES','ACTIVITY_LOG','SETTINGS','MKT_MASTER','DELETED_CUSTOMERS'];
 let spreadsheetCache_=null;
 let databaseLockHeld_=false;
 function databaseSetting_(ss,key){const s=ss.getSheetByName('SETTINGS');if(!s)return '';const rows=s.getDataRange().getValues();const row=rows.slice(1).find(function(r){return r[0]===key;});return row?String(row[1]):'';}
@@ -2485,4 +2499,47 @@ function saveBrowserRecovery_(payload,token){
  ensureDailyDatabaseBackup_(ss,actor);storeArchive_(ss,'BROWSER_RECOVERY',recovery.id,actor,recovery.reason,recovery);
  const read=readBusinessData_(token);
  return Object.assign({},read,{success:true,recoveryVersion:1,recoveryId:recovery.id,users:actor[5]==='ADMIN'?userRows_(ss).map(publicUser_):[publicUser_(actor)],message:'Browser data backed up; authoritative Sheet data loaded.'});
+}
+
+
+// Customer deletion removes live rows only after a recoverable archive exists.
+const DELETED_CUSTOMER_HEADERS_=['Customer Code','Deleted At','Deleted By','Operation ID','Backup ID'];
+function deletedCustomerCodes_(ss){
+ const sheet=ss.getSheetByName('DELETED_CUSTOMERS');if(!sheet)return new Set();
+ const rows=sheet.getDataRange().getValues();
+ if(JSON.stringify(rows[0].slice(0,5))!==JSON.stringify(DELETED_CUSTOMER_HEADERS_))throw new Error('DELETED_CUSTOMERS: invalid headers');
+ return new Set(rows.slice(1).filter(function(row){return row[0];}).map(function(row){return String(row[0]);}));
+}
+function captureCustomerDeletion_(ss,codes,now){
+ const selected=new Set(codes),tables={};
+ SYNC_TABLES.slice(0,5).forEach(function(table){
+  const sheet=ss.getSheetByName(table[1]);if(!sheet)return;
+  const values=backupValues_(sheet),headers=values[0],column=headers.indexOf('Customer Code');
+  if(column<0)throw new Error(table[1]+': missing Customer Code header');
+  const formulas=sheet.getDataRange().getFormulas(),rows=[],savedFormulas=[];
+  values.slice(1).forEach(function(row,index){if(selected.has(String(row[column]))){rows.push(row);savedFormulas.push(formulas[index+1]);}});
+  tables[table[1]]={headers:headers,rows:rows,formulas:savedFormulas};
+ });
+ return {version:1,codes:codes,deletedAt:now,tables:tables};
+}
+function applyCustomerDeletion_(ss,operation,actor,deletion){
+ const backupId='DELETE-'+operation;
+ storeArchive_(ss,'DATABASE_BACKUPS',backupId,actor,'BEFORE_CUSTOMER_DELETE',deletion);
+ let registry=ss.getSheetByName('DELETED_CUSTOMERS');if(!registry){registry=ss.insertSheet('DELETED_CUSTOMERS');registry.appendRow(DELETED_CUSTOMER_HEADERS_);}
+ const known=deletedCustomerCodes_(ss);
+ deletion.codes.forEach(function(code){if(!known.has(code)){registry.appendRow([code,deletion.deletedAt,String(actor[1]),operation,backupId]);known.add(code);}});
+ SpreadsheetApp.flush();
+ // Delete bottom-up so shifted row indices never select a different store.
+ const selected=new Set(deletion.codes);
+ Object.keys(deletion.tables).forEach(function(name){
+  const sheet=ss.getSheetByName(name);if(!sheet)return;
+  const rows=sheet.getDataRange().getValues(),column=rows[0].indexOf('Customer Code');
+  if(column<0)throw new Error(name+': missing Customer Code header');
+  for(let end=rows.length-1;end>=1;){
+   if(!selected.has(String(rows[end][column]))){end--;continue;}
+   let start=end;while(start>1&&selected.has(String(rows[start-1][column])))start--;
+   sheet.deleteRows(start+1,end-start+1);end=start-1;
+  }
+ });
+ SpreadsheetApp.flush();
 }

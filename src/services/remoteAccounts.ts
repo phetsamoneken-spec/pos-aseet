@@ -1,6 +1,6 @@
 import type { User } from '../types';
 import type { BusinessSnapshot } from './businessData';
-export interface AccountResponse { success: boolean; message?: string; error?: string; user?: User; users?: User[]; token?: string; expiresAt?: string; dataVersion?:number; scope?:string; snapshot?:BusinessSnapshot; spreadsheetId?:string; backupId?:string; recoveryVersion?:number; recoveryId?:string; migratedFromSpreadsheetId?:string; writeVersion?:number; retryable?:boolean; mutationId?:string; customerCodes?:string[]; patch?:BusinessSnapshot; entityId?:string; businessRevision?:string; settingsVersion?:number; settings?:unknown; }
+export interface AccountResponse { success: boolean; message?: string; error?: string; user?: User; users?: User[]; token?: string; expiresAt?: string; dataVersion?:number; deletionVersion?:number; scope?:string; snapshot?:BusinessSnapshot; spreadsheetId?:string; backupId?:string; recoveryVersion?:number; recoveryId?:string; migratedFromSpreadsheetId?:string; writeVersion?:number; retryable?:boolean; mutationId?:string; customerCodes?:string[]; patch?:BusinessSnapshot; entityId?:string; businessRevision?:string; settingsVersion?:number; settings?:unknown; }
 let memory: { endpoint: string; token: string; expiresAt: string } | null = null;
 function key(endpoint: string) { return 'mkt-sheet-session:' + endpoint; }
 export function remoteSession(endpoint: string) {

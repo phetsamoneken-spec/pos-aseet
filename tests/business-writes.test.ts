@@ -15,10 +15,12 @@ const {INITIAL_SETTINGS}=await import('../src/data/seedData');
 const endpoint='https://script.google.com/macros/s/incremental-fixture/exec';INITIAL_SETTINGS.appsScriptUrl=endpoint;
 const {storage}=await import('../src/services/storage');
 const {GasService}=await import('../src/services/gasService');
+let legacyDeletion=false;
 let loseNext=false,holdNext=false,release:(()=>void)|undefined;const calls:any[]=[];
 globalThis.fetch=async(url,init)=>{
  assert.equal(url,endpoint);const body=JSON.parse(String(init?.body));calls.push(body);
  const result=server.context.doPost({postData:{contents:JSON.stringify(body)}});
+ if(legacyDeletion&&body.action==='GET_BUSINESS_DATA')delete result.deletionVersion;
  if(body.action==='MUTATE_BUSINESS'&&holdNext){holdNext=false;await new Promise<void>(resolve=>{release=resolve});}
  if(body.action==='MUTATE_BUSINESS'&&loseNext){loseNext=false;throw Error('Simulated lost response after the Sheet saved');}
  return new Response(JSON.stringify(result));
@@ -57,8 +59,10 @@ for(let n=0;n<50&&!release;n++)await new Promise(resolve=>setTimeout(resolve,1))
 assert.equal((await storage.login('writer','Writer-test-42!')).success,true);release!();assert.equal((await waiting).success,false);assert.equal(storage.getCustomerByCode('HELD'),undefined);
 assert.equal((await storage.loadBusinessFromSheets()).success,true);
 assert.equal((await storage.commitBusinessChange('ADD_CUSTOMER',{...store,code:'WRONG',team:'B2'})).success,false);assert.equal(storage.getPendingBusinessWrite(),null);
-assert.equal((await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:'AUTO1'})).success,true);assert.equal(storage.getCustomerByCode('AUTO1')!.status,'DELETED');assert.equal(storage.getTransactions().length,1,'deletion retains the cancelled receipt');
-assert.equal(server.sheets.get('CUSTOMERS').rows.find((r:any[])=>r[0]==='AUTO1')[7],'DELETED');
+legacyDeletion=true;const deletesBefore=calls.filter(c=>c.action==='MUTATE_BUSINESS').length;
+assert.equal((await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:'AUTO1'})).success,false);assert.equal(calls.filter(c=>c.action==='MUTATE_BUSINESS').length,deletesBefore,'old backends must not acknowledge a status-only deletion as row removal');assert.ok(storage.getCustomerByCode('AUTO1'));assert.match(storage.getBusinessWriteState().message,/Code.gs/);
+legacyDeletion=false;assert.equal((await storage.retryPendingBusinessWrite()).success,true);assert.equal(storage.getCustomerByCode('AUTO1'),undefined);assert.equal(storage.getTransactions().length,0,'deleted-store receipts are archived outside the live tables');
+assert.equal(server.sheets.get('CUSTOMERS').rows.some((r:any[])=>r[0]==='AUTO1'),false);
 assert.equal((await storage.login('admin','Test-only-password-42!')).success,true);assert.ok(storage.getPendingBusinessWrite(),'original account retains its unacknowledged receipt');assert.equal((await storage.retryPendingBusinessWrite()).success,true);assert.ok(storage.getCustomerByCode('HELD'));
 const mutationCalls=calls.filter(c=>c.action==='MUTATE_BUSINESS');assert.ok(mutationCalls.length>8);assert.equal(calls.filter(c=>c.action==='SYNC_BULK_DATA').length,0,'normal edits never upload a full cached snapshot');
 console.log('PASS: real storage → authenticated Apps Script → Sheet writes, lost-response/reload retry, rejection feedback, price publication, bulk/read guards, account switches and deletion history.');

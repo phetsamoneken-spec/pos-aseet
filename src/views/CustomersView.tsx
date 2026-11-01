@@ -197,8 +197,8 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
   const handleDeleteCustomer = async (customer: Customer) => {
     if(deletingCode)return;
     const confirmed = window.confirm(lang === 'lo'
-      ? `ລົບຮ້ານ “${customer.name}” (${customer.code}) ຂອງທີມ ${customer.team} ອອກຈາກລາຍຊື່ບໍ່?\nປະຫວັດສັນຍາ ແລະລາຍຈ່າຍຈະຍັງເກັບໄວ້.`
-      : `Delete store “${customer.name}” (${customer.code}), Team ${customer.team}, from the active list?\nContract and transaction history will be retained.`);
+      ? `ລົບຮ້ານ “${customer.name}” (${customer.code}) ຂອງທີມ ${customer.team} ອອກຈາກແອັບ ແລະຕາຕະລາງໃຊ້ງານໃນ Sheet ບໍ່?\nຂໍ້ມູນຮ້ານ, ສັນຍາ, ງົບ ແລະລາຍຈ່າຍຈະສຳຮອງໄວ້ກ່ອນລົບ.`
+      : `Delete store “${customer.name}” (${customer.code}), Team ${customer.team}, from the app and working Sheet tables?\nStore, contract, budget and spending records will be backed up before their rows are removed.`);
     if (!confirmed) return;
     setDeletingCode(customer.code);
     const result = await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:customer.code});

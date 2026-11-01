@@ -8,6 +8,7 @@ function backend(options = {}) {
   let held = false;
   const sheets = new Map();
   const failWrites = new Set();
+  const failDeletes = new Set();
   class Sheet {
     constructor(name) { this.name = name; this.rows = []; }
     getName(){return this.name;}
@@ -34,7 +35,8 @@ function backend(options = {}) {
     }
     appendRow(row) { this.rows.push([...row]); }
     setFrozenRows() {}
-    deleteRow(row) { this.rows.splice(row-1,1); }
+    deleteRow(row) { this.deleteRows(row,1); }
+    deleteRows(row,count) { if(failDeletes.has(this.name))throw Error('simulated row deletion failure');this.rows.splice(row-1,count); }
   }
   const ss = { getSpreadsheetTimeZone:()=> 'Asia/Bangkok', getId: () => options.sheetId||'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
   const context = vm.createContext({
@@ -47,7 +49,7 @@ function backend(options = {}) {
     Logger: { log() {} }
   });
   vm.runInContext(source, context);
-  return { context, sheets, ss, failWrites, post(payload) { let result;try{result=context.handleBulkSync(payload);}catch(error){result={success:false,error:String(error)};} assert.equal(held, false); return result; } };
+  return { context, sheets, ss, failWrites, failDeletes, post(payload) { let result;try{result=context.handleBulkSync(payload);}catch(error){result={success:false,error:String(error)};} assert.equal(held, false); return result; } };
 }
 const payload = () => ({
   spreadsheetId: 'YOUR_SPREADSHEET_ID',
@@ -344,12 +346,12 @@ test('incremental store and expense writes reach the shared Sheet, enforce teams
  assert.equal(incremental(b,team.token,'forged-budget-01','UPDATE_BUDGET',{budgetId:added.patch.budgets[0].id,newAmount:9999}).success,false);
  assert.equal(incremental(b,team.token,'cancel-expense-1','CANCEL_TRANSACTION',{txnId:expense.entityId,reason:'Correction'}).success,true);
  assert.equal(read().budgets.find(x=>x.customerCode==='C1'&&x.periodNumber===1).totalUsed,30);
- const deleted=incremental(b,team.token,'delete-store-001','DELETE_CUSTOMER',{customerCode:'C1'});assert.equal(deleted.success,true);assert.equal(deleted.patch.customers[0].status,'DELETED');
- assert.equal(b.sheets.get('CUSTOMERS').rows.find(row=>row[0]==='C1')[7],'DELETED');assert.equal(read().transactions.length,2);assert.equal(read().contracts.length,2);
+ const deleted=incremental(b,team.token,'delete-store-001','DELETE_CUSTOMER',{customerCode:'C1'});assert.equal(deleted.success,true);assert.equal(deleted.patch.customers.length,0);
+ assert.equal(b.sheets.get('CUSTOMERS').rows.some(row=>row[0]==='C1'),false);assert.equal(read().transactions.length,0);assert.equal(read().contracts.length,1);
  assert.equal(incremental(b,team.token,'expense-deleted1','ADD_TRANSACTION',entry).success,false);
- const independent=userRequest(b,'AUTH_LOGIN',{username:'writer',password:'Writer-test-42!'});const own=userRequest(b,'GET_BUSINESS_DATA',{},independent.token);assert.deepEqual(JSON.parse(JSON.stringify(own.snapshot.customers.map(c=>[c.code,c.status]))),[['C1','DELETED']]);
+ const independent=userRequest(b,'AUTH_LOGIN',{username:'writer',password:'Writer-test-42!'});const own=userRequest(b,'GET_BUSINESS_DATA',{},independent.token);assert.deepEqual(JSON.parse(JSON.stringify(own.snapshot.customers.map(c=>[c.code,c.status]))),[]);
  assert.equal(incremental(b,team.token,'delete-all-team1','DELETE_ALL_CUSTOMERS',{}).success,false);
- assert.equal(incremental(b,login.token,'delete-all-admin','DELETE_ALL_CUSTOMERS',{}).success,true);assert.equal(read().customers.every(c=>c.status==='DELETED'),true);assert.equal(read().transactions.length,2);
+ assert.equal(incremental(b,login.token,'delete-all-admin','DELETE_ALL_CUSTOMERS',{}).success,true);assert.equal(read().customers.length,0);assert.equal(read().transactions.length,0);
 });
 
 test('journal recovery finishes partial writes once and stale full snapshots cannot overwrite another browser',()=>{
@@ -383,7 +385,7 @@ test('legacy browser recovery backs up scoped data without applying stale balanc
  const archive=b.sheets.get('BROWSER_RECOVERY').rows.slice(1).filter(r=>r[0]===recovery.id).sort((a,b)=>a[5]-b[5]).map(r=>r[8]).join('');
  assert.ok(archive.includes('Old local name'));assert.ok(!archive.includes('Do-not-copy'));assert.ok(!archive.includes(login.token));
  assert.equal(userRequest(b,'SAVE_BROWSER_RECOVERY',{recovery},login.token).success,true);assert.equal(b.sheets.get('BROWSER_RECOVERY').rows.length,2,'repeat backup ID does not duplicate chunks');
- const deleted=incremental(b,login.token,'recovery-delete1','DELETE_CUSTOMER',{customerCode:'RECOVERY'});assert.equal(deleted.success,true);assert.equal(deleted.snapshot.customers[0].status,'DELETED');assert.ok(deleted.snapshot.customers[0].deletedAt);
+ const deleted=incremental(b,login.token,'recovery-delete1','DELETE_CUSTOMER',{customerCode:'RECOVERY'});assert.equal(deleted.success,true);assert.equal(deleted.snapshot.customers.length,0);assert.ok(b.sheets.get('DELETED_CUSTOMERS').rows.find(r=>r[0]==='RECOVERY')[1]);
  const history=b.sheets.get('CHANGE_HISTORY').rows;assert.ok(history.some(r=>r[3]==='DELETE_CUSTOMER'&&r[4]==='customers'&&r[5]==='RECOVERY'&&Number.isFinite(Date.parse(r[1]))));
  assert.equal(userRequest(b,'BACKUP_DATABASE',{},login.token).success,true);
  const backups=b.sheets.get('DATABASE_BACKUPS').rows.slice(1);const manual=backups.filter(r=>r[4]==='ADMIN_MANUAL').sort((a,b)=>a[5]-b[5]);const snapshot=JSON.parse(manual.map(r=>r[8]).join(''));assert.ok(snapshot.tables.USERS.some(r=>r[1]==='admin'));assert.equal(snapshot.tables.SESSIONS,undefined);assert.ok(!JSON.stringify(snapshot).includes(login.token));
@@ -415,4 +417,54 @@ test('store edits are scoped, update linked names and timestamps, retain spendin
  assert.equal(incremental(b,team.token,'edit-store-team2','UPDATE_CUSTOMER',{code:'EDIT',name:'Forged',annualBudget:900000}).success,false);
  const deleted=userRequest(b,'DELETE_USER',{id:team.user.id},login.token);assert.equal(deleted.success,true);const row=b.sheets.get('USERS').rows.find(row=>row[0]===team.user.id);assert.equal(row[10],'DELETED');assert.ok(row[11]&&row[12]);
  assert.ok(b.sheets.get('CHANGE_HISTORY').rows.some(row=>row[3]==='DELETE_USER'&&row[4]==='USERS'&&row[5]===team.user.id));assert.equal(deleted.users.some(user=>user.id===team.user.id),false);
+});
+
+test('app deletion archives first, physically removes linked Sheet rows, retries safely and blocks stale resurrection',()=>{
+ const {b,login}=signedInBackend();
+ incremental(b,login.token,'physical-store1','ADD_CUSTOMER',newStore('REMOVE'));
+ incremental(b,login.token,'physical-store2','ADD_CUSTOMER',newStore('KEEP','B2'));
+ incremental(b,login.token,'physical-receipt','ADD_TRANSACTION',{customerCode:'REMOVE',date:'2026-11-01',category:'Other',description:'Keep in backup',amount:20});
+ const stale=userRequest(b,'GET_BUSINESS_DATA',{},login.token).snapshot;
+ const customers=b.sheets.get('CUSTOMERS');customers.rows[0].push('Manual Formula');customers.rows[1].push('=1+1');
+ const before=JSON.stringify(customers.rows);
+ b.failWrites.add('DATABASE_BACKUPS');
+ assert.equal(incremental(b,login.token,'physical-delete1','DELETE_CUSTOMER',{customerCode:'REMOVE'}).success,false);
+ assert.equal(JSON.stringify(customers.rows),before,'backup failure must leave live data intact');assert.equal(b.sheets.has('DELETED_CUSTOMERS'),false);
+ b.failWrites.clear();
+ const deleted=incremental(b,login.token,'physical-delete1','DELETE_CUSTOMER',{customerCode:'REMOVE'});assert.equal(deleted.success,true);assert.equal(deleted.deletionVersion,1);
+ const tables=['CUSTOMERS','CUSTOMER_CONDITIONS','CONTRACTS','BUDGETS','BUDGET_TRANSACTIONS'];
+ for(const name of tables){const rows=b.sheets.get(name).rows,column=rows[0].indexOf('Customer Code');assert.ok(!rows.slice(1).some(row=>row[column]==='REMOVE'),name);}
+ assert.ok(customers.rows.some(row=>row[0]==='KEEP'),'unrelated team stays intact');
+ const archive=b.sheets.get('DATABASE_BACKUPS').rows.filter(row=>row[0]==='DELETE-OP-physical-delete1').sort((a,b)=>a[5]-b[5]);
+ const backup=JSON.parse(archive.map(row=>row[8]).join(''));assert.ok(backup.tables.CUSTOMERS.rows.some(row=>row[0]==='REMOVE'));assert.equal(backup.tables.CUSTOMERS.formulas[0].at(-1),'=1+1');assert.equal(backup.tables.BUDGET_TRANSACTIONS.rows[0][9],20);
+ assert.equal(b.sheets.get('DELETED_CUSTOMERS').rows[1][4],'DELETE-OP-physical-delete1');
+ const history=JSON.stringify(b.sheets.get('CHANGE_HISTORY').rows),backups=b.sheets.get('DATABASE_BACKUPS').rows.length;
+ assert.equal(incremental(b,login.token,'physical-delete1','DELETE_CUSTOMER',{customerCode:'REMOVE'}).success,true);assert.equal(JSON.stringify(b.sheets.get('CHANGE_HISTORY').rows),history);assert.equal(b.sheets.get('DATABASE_BACKUPS').rows.length,backups);
+ const current=userRequest(b,'GET_BUSINESS_DATA',{},login.token);
+ assert.equal(userRequest(b,'SYNC_BULK_DATA',{...stale,expectedBusinessRevision:current.businessRevision},login.token).success,true);
+ assert.ok(!customers.rows.some(row=>row[0]==='REMOVE'),'even a full publication cannot restore an archived customer code');
+ assert.equal(incremental(b,login.token,'physical-recreate','ADD_CUSTOMER',newStore('REMOVE')).success,false);
+ assert.ok(b.sheets.get('CHANGE_HISTORY').rows.some(row=>row[3]==='DELETE_CUSTOMER'&&JSON.parse(row[10]).after===null));
+});
+
+test('interrupted physical deletion recovers from its journal before the next read',()=>{
+ const {b,login}=signedInBackend();incremental(b,login.token,'partial-delete-store','ADD_CUSTOMER',newStore('PARTIAL'));
+ b.failDeletes.add('BUDGETS');
+ assert.equal(incremental(b,login.token,'partial-delete-op','DELETE_CUSTOMER',{customerCode:'PARTIAL'}).success,false);
+ assert.equal(b.sheets.get('CUSTOMERS').rows.length,1);assert.ok(b.sheets.get('BUDGETS').rows.length>1);
+ assert.equal(userRequest(b,'GET_BUSINESS_DATA',{},login.token).success,false,'incomplete deletion must not be acknowledged');
+ b.failDeletes.clear();const read=userRequest(b,'GET_BUSINESS_DATA',{},login.token);assert.equal(read.success,true);assert.equal(read.snapshot.customers.length,0);assert.equal(b.sheets.get('BUDGETS').rows.length,1);
+ assert.equal(incremental(b,login.token,'partial-delete-op','DELETE_CUSTOMER',{customerCode:'PARTIAL'}).success,true);
+ assert.ok(b.sheets.get('APP_WRITES').rows.filter(row=>row[0]==='OP-partial-delete-op').every(row=>row[4]==='DONE'));
+});
+
+test('retrying a legacy completed soft-delete receipt removes only its original stores',()=>{
+ const {b,login}=signedInBackend();incremental(b,login.token,'legacy-delete-store','ADD_CUSTOMER',newStore('LEGACY'));
+ const kind='DELETE_ALL_CUSTOMERS',data={},id='OP-legacy-delete-all';
+ b.sheets.get('CUSTOMERS').rows[1][7]='DELETED';
+ const actor=b.sheets.get('USERS').rows.find(row=>row[1]==='admin');
+ const plan={tables:{},codes:['LEGACY'],result:{},actor:[actor[0],actor[1]],action:kind};
+ const text=JSON.stringify(plan);b.context.writeJournal_().appendRow([id,actor[0],b.context.digest_(JSON.stringify({kind,data})),b.context.digest_(text),'DONE',0,1,text,new Date().toISOString()]);
+ incremental(b,login.token,'new-after-legacy','ADD_CUSTOMER',newStore('NEW'));
+ const result=userRequest(b,'MUTATE_BUSINESS',{id,kind,data},login.token);assert.equal(result.success,true);assert.equal(result.mutationId,id);assert.ok(!b.sheets.get('CUSTOMERS').rows.some(row=>row[0]==='LEGACY'));assert.ok(b.sheets.get('CUSTOMERS').rows.some(row=>row[0]==='NEW'),'an old delete-all retry must not delete stores added later');
 });

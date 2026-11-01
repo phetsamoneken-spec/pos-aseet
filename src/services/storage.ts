@@ -195,6 +195,12 @@ class StorageService {
     if(!wasClean){const recovered=await this.recoverLegacyCache('RETRY_SAVE');if(!recovered.success)return recovered;return this.retryPendingBusinessWrite();}
     const run=async():Promise<BusinessWriteResult>=>{
       this.writeFeedback={key,status:'saving',message:'ກຳລັງບັນທຶກໄປ Sheet… (Saving to Sheet…)'};this.notify();
+      if(pending.kind==='DELETE_CUSTOMER'||pending.kind==='DELETE_ALL_CUSTOMERS'){
+        const capability=await accountRequest(endpoint,'GET_BUSINESS_DATA');
+        if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return {success:false,message:'Login again. The delete receipt is retained.'};}
+        if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed; the delete receipt is retained.'};
+        if(!capability.success||capability.deletionVersion!==1){const message=capability.success?'ກະລຸນາໃຫ້ Admin ຕິດຕັ້ງ Code.gs ໃໝ່ ແລະ Deploy → New version ເພື່ອລົບແຖວໃນ Sheet.':capability.message||'Could not verify Sheet deletion support';this.writeFeedback={key,status:'error',message};this.notify();return {success:false,message};}
+      }
       const result=await accountRequest(endpoint,'MUTATE_BUSINESS',{id:pending.id,kind:pending.kind,data:pending.data});
       if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return {success:false,message:'Login again. The save receipt is retained.'};}
       if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed; the save receipt is retained for the original account.'};

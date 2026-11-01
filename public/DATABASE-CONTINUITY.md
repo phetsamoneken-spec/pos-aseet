@@ -1,4 +1,4 @@
-# Sheet ກາງ, ສຳຮອງ ແລະການແກ້ຂໍ້ມູນ — 2026.11.01.15
+# Sheet ກາງ, ສຳຮອງ ແລະການແກ້ຂໍ້ມູນ — 2026.11.01.18
 
 ## ເປີດໃຊ້
 
@@ -15,7 +15,7 @@
 - ເພີ່ມ, ແກ້ໄຂ ແລະລົບຮ້ານ ຈະລໍ Sheet ຢືນຢັນກ່ອນສະແດງວ່າສຳເລັດ. Admin ເຮັດໄດ້ທຸກທີມ; User ເຮັດໄດ້ສະເພາະທີມຂອງຕົນ.
 - ປຸ່ມຮູບດິນສໍໃນ Customers ໃຊ້ແກ້ໄຂຂໍ້ມູນຮ້ານ. User ແກ້ຂໍ້ມູນຕິດຕໍ່ໄດ້; ເງື່ອນໄຂ, ຈຳນວນສິນຄ້າ ແລະງົບເປັນສິດ Admin.
 - ເພີ່ມລາຍຈ່າຍ, ຍົກເລີກລາຍຈ່າຍ, ແກ້ງົບ ແລະຈັດການ User ບັນທຶກລົງ Sheet ໂດຍກົງ.
-- ລົບຮ້ານ/ລົບ User ໃຊ້ Status=DELETED ພ້ອມ Deleted At. ບັນຊີທີ່ລົບ Login ບໍ່ໄດ້. ປະຫວັດສັນຍາ, ງົບ ແລະລາຍຈ່າຍຍັງຢູ່ໃນ Sheet ແລະສຳຮອງ.
+- ລົບຮ້ານ: ສຳຮອງແຖວເດີມ ແລະສູດກ່ອນ ແລ້ວລົບອອກຈາກ 5 ຕາຕະລາງໃຊ້ງານ. ການລົບ User ຍັງໃຊ້ Status=DELETED ແລະ Login ບໍ່ໄດ້.
 - CHANGE_HISTORY ເກັບຜູ້ດຳເນີນການ, ເວລາ, ປະເພດການປ່ຽນແປງ ແລະຄ່າກ່ອນ/ຫຼັງ. ຕາຕະລາງໃຊ້ງານມີ Created At, Updated At, Deleted At ຫຼື Cancelled At ຕາມປະເພດຂໍ້ມູນ. ເວລາເກັບເປັນ ISO-8601; ໜ້າ User ສະແດງເວລາແກ້ໄຂຕາມ Asia/Bangkok.
 - ຂໍ້ມູນໃນເຄື່ອງອື່ນຈະ refresh ເມື່ອ Login, ກັບມາໜ້າແອັບ ຫຼືກົດໂຫຼດຈາກ Sheet. User ເຫັນສະເພາະທີມທີ່ Admin ກຳນົດ.
 
@@ -31,3 +31,9 @@ Session credentials are excluded from database transfers and backups. Browser re
 Backup JSON is split into checksum-protected, Unicode-safe chunks. Native Date values in full database snapshots use `{"$date":"ISO-8601 timestamp"}` so their type can be recovered when restoring. CHANGE_HISTORY retains individual before/after records between daily snapshots; APP_WRITES retains recoverable, idempotent mutation plans. Partial writes complete before later authenticated reads/writes. Stale full snapshots remain guarded by server revisions.
 
 Tests include an actual Apps Script mock cutover into a separate spreadsheet, unchanged user hashes, fresh login, retirement of old writes, scoped browser recovery, failure retention, user deletion audit, customer editing and financial invariants. A production-bundle DOM flow reproduces the screenshot's dirty cache, then edits/adds/deletes through real doPost handlers against in-memory Sheet tables. The owner must install and deploy this Code.gs before live automatic writes and routing activate.
+
+## App → Sheet physical customer deletion (2026.11.01.18)
+
+Deploy this Code.gs in the existing project/deployment, preserving its Script Properties and URL. The browser verifies deletionVersion=1 before sending a delete; an older backend shows a setup message and keeps the receipt instead of claiming physical removal. Each deletion archives selected raw values, Date types, formulas and extra columns under DELETE-<operation ID> in DATABASE_BACKUPS, then removes matching rows from the five working tables. Initial backups, prior archives and MKT_MASTER input data remain unchanged. No pre-existing deleted rows are purged just by installing this release.
+
+DELETED_CUSTOMERS stores the code, deletion timestamp, actor, operation and backup reference. Deleted codes stay reserved, including for Excel publications. CHANGE_HISTORY retains before/after records. A failure to save the backup leaves working rows intact; an interrupted deletion finishes from APP_WRITES before later reads, and lost-response retries cannot delete unrelated rows or duplicate archives. Contiguous rows are removed in batches. Legacy completed deletion receipts upgrade only their original stores. Normal new deletions, delete-all and code reservation are enforced by the backend, using the actor’s current team assignment.

@@ -22,11 +22,11 @@ assert.equal((await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode
 assert.equal(businessFingerprint(storage.exportBusinessBackup()),before,'backup failure retains all local edits');assert.equal(server.sheets.get('CUSTOMERS').rows[1][7],'ACTIVE');
 assert.ok(storage.getLocalRecoveryBackup()!.business.customers.some(c=>c.code==='LOCAL-ONLY'));
 failBackup=false;assert.equal((await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:'LIVE'})).success,true,'dirty browser cache must no longer block a permitted deletion');
-assert.equal(server.sheets.get('CUSTOMERS').rows[1][7],'DELETED');assert.equal(storage.getCustomerByCode('LIVE')!.status,'DELETED');assert.equal(storage.hasUnsyncedBusinessData(),false);
+assert.equal(server.sheets.get('CUSTOMERS').rows.length,1);assert.equal(storage.getCustomerByCode('LIVE'),undefined);assert.equal(storage.hasUnsyncedBusinessData(),false);
 const rows=server.sheets.get('BROWSER_RECOVERY').rows.slice(1),ids=[...new Set(rows.map((r:any[])=>r[0]))];assert.ok(ids.length>=1);
 const recovered=JSON.parse(rows.filter((r:any[])=>r[0]===ids.at(-1)).sort((a:any[],b:any[])=>a[5]-b[5]).map((r:any[])=>r[8]).join(''));
 assert.ok(recovered.business.customers.some((c:any)=>c.code==='LOCAL-ONLY'));assert.equal(recovered.business.transactions[0].amount,30);assert.ok(!JSON.stringify(recovered.users).includes('password'));assert.ok(!JSON.stringify(recovered).includes(remoteSession(endpoint)!.token));
-assert.equal(storage.getTransactions().length,0,'old unsent spending is backed up without double-charging the live budget');assert.equal(storage.getBudgetForCustomer('LIVE')!.totalUsed,0);
+assert.equal(storage.getTransactions().length,0,'old unsent spending is backed up without double-charging the live budget');assert.equal(storage.getBudgetForCustomer('LIVE'),undefined);
 assert.equal((await storage.commitBusinessChange('ADD_CUSTOMER',{...store,code:'SECOND'})).success,true);
 assert.equal((await storage.commitBusinessChange('UPDATE_BUDGET',{budgetId:storage.getBudgetForCustomer('SECOND')!.id,newAmount:2000})).success,true);
 const actual=server.context.doPost({postData:{contents:JSON.stringify({action:'GET_BUSINESS_DATA',authToken:remoteSession(endpoint)!.token})}});assert.equal(businessFingerprint(storage.exportBusinessBackup()),businessFingerprint(actual.snapshot),'web cache and the authoritative Sheet match after writes');

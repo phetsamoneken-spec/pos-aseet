@@ -78,8 +78,8 @@ export const DeleteAllCustomersModal: React.FC<DeleteAllCustomersModalProps> = (
             </p>
             <p className="text-rose-800 leading-relaxed">
               {lang === 'lo'
-                ? 'ຮ້ານທັງໝົດຈະຖືກປ່ຽນສະຖານະເປັນ DELETED ໃນ Sheet ແລະຖອນອອກຈາກລາຍຊື່. ປະຫວັດສັນຍາ, ງົບປະມານ ແລະລາຍຈ່າຍຍັງເກັບໄວ້.'
-                : 'Stores will be marked DELETED in the shared Sheet and removed from the active list. Contracts, budgets and transaction history are retained.'}
+                ? 'ຈະສຳຮອງຂໍ້ມູນກ່ອນ ແລ້ວລົບແຖວຮ້ານ, ເງື່ອນໄຂ, ສັນຍາ, ງົບປະມານ ແລະລາຍຈ່າຍອອກຈາກຕາຕະລາງໃຊ້ງານໃນ Sheet ແລະແອັບ.'
+                : 'After a backup is saved, store, condition, contract, budget and spending rows will be removed from the working Sheet tables and app.'}
             </p>
           </div>
 
