@@ -7,7 +7,7 @@ assert.equal(resolveBackendUrl('',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
 assert.equal(resolveBackendUrl('   ',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL);
 const retired='https://script.google.com/macros/s/AKfycbxt7FMAsx19pzuuMUB8xheP4aJtsZvjD_3W1qW5fjyZmvrgfIHCt7-TtC-QFwrCmiDu/exec';
 assert.equal(resolveBackendUrl(retired,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'existing devices migrate from the retired URL');
-const previous='https://script.google.com/macros/s/AKfycbwKHxLNnsWbxilUKk_JOes6pFfaqeKDEfn-fDqvIlkQmWy75Va1trTLa6F4ZEP_PmI4/exec';
+const previous='https://script.google.com/macros/s/AKfycbzPsHp8cblSRE8UYQXzGjSKFJgl85TqCn5Tj6kpl25-UmB-4p5zaazKXmEmV4n_WQYn/exec';
 assert.equal(isRetiredBackend(previous),true);
 assert.equal(isRetiredBackend(DEPLOYED_BACKEND_URL),false);
 assert.equal(resolveBackendUrl(previous,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'existing devices migrate from the immediately previous deployment');

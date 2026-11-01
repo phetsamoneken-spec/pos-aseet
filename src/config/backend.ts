@@ -1,6 +1,6 @@
 // Public web-app address, never a password or session credential.
-export const DEPLOYED_BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzPsHp8cblSRE8UYQXzGjSKFJgl85TqCn5Tj6kpl25-UmB-4p5zaazKXmEmV4n_WQYn/exec';
-export const RETIRED_BACKENDS = ['https://script.google.com/macros/s/AKfycbwKHxLNnsWbxilUKk_JOes6pFfaqeKDEfn-fDqvIlkQmWy75Va1trTLa6F4ZEP_PmI4/exec', 'https://script.google.com/macros/s/AKfycbzqRrcFZcabexZCXH7okCcWOqTuJOc2CsBq4sKz7m9sLjBdz_bEYWslfsgl4-HWY-gT/exec', 'https://script.google.com/macros/s/AKfycbxt7FMAsx19pzuuMUB8xheP4aJtsZvjD_3W1qW5fjyZmvrgfIHCt7-TtC-QFwrCmiDu/exec'];
+export const DEPLOYED_BACKEND_URL = 'https://script.google.com/macros/s/AKfycbzytVQ8C11wxP7zi96XnJ1ce5nHBEDWvgtGeb7Dw5ahLSFng8skz287_TmcAFKEc6jC/exec';
+export const RETIRED_BACKENDS = ['https://script.google.com/macros/s/AKfycbzPsHp8cblSRE8UYQXzGjSKFJgl85TqCn5Tj6kpl25-UmB-4p5zaazKXmEmV4n_WQYn/exec', 'https://script.google.com/macros/s/AKfycbwKHxLNnsWbxilUKk_JOes6pFfaqeKDEfn-fDqvIlkQmWy75Va1trTLa6F4ZEP_PmI4/exec', 'https://script.google.com/macros/s/AKfycbzqRrcFZcabexZCXH7okCcWOqTuJOc2CsBq4sKz7m9sLjBdz_bEYWslfsgl4-HWY-gT/exec', 'https://script.google.com/macros/s/AKfycbxt7FMAsx19pzuuMUB8xheP4aJtsZvjD_3W1qW5fjyZmvrgfIHCt7-TtC-QFwrCmiDu/exec'];
 export function isRetiredBackend(value:unknown):boolean { return typeof value==='string' && RETIRED_BACKENDS.includes(value.trim()); }
 
 const buildDefault = import.meta.env?.PROD ? DEPLOYED_BACKEND_URL : '';
