@@ -1,4 +1,4 @@
-# Sheet ກາງ, ສຳຮອງ ແລະການແກ້ຂໍ້ມູນ — 2026.11.01.18
+# Sheet ກາງ, ສຳຮອງ ແລະການແກ້ຂໍ້ມູນ — 2026.11.01.21
 
 ## ເປີດໃຊ້
 
@@ -37,3 +37,13 @@ Tests include an actual Apps Script mock cutover into a separate spreadsheet, un
 Deploy this Code.gs in the existing project/deployment, preserving its Script Properties and URL. The browser verifies deletionVersion=1 before sending a delete; an older backend shows a setup message and keeps the receipt instead of claiming physical removal. Each deletion archives selected raw values, Date types, formulas and extra columns under DELETE-<operation ID> in DATABASE_BACKUPS, then removes matching rows from the five working tables. Initial backups, prior archives and MKT_MASTER input data remain unchanged. No pre-existing deleted rows are purged just by installing this release.
 
 DELETED_CUSTOMERS stores the code, deletion timestamp, actor, operation and backup reference. Deleted codes stay reserved, including for Excel publications. CHANGE_HISTORY retains before/after records. A failure to save the backup leaves working rows intact; an interrupted deletion finishes from APP_WRITES before later reads, and lost-response retries cannot delete unrelated rows or duplicate archives. Contiguous rows are removed in batches. Legacy completed deletion receipts upgrade only their original stores. Normal new deletions, delete-all and code reservation are enforced by the backend, using the actor’s current team assignment.
+
+## Faster deletion (2026.11.01.21)
+
+The browser reuses deletion support only from a validated response for the same endpoint, user and session token. A fresh login or reload rechecks support, and each delete acknowledgement must still confirm deletionVersion=1. Authorization stays on the server.
+
+Apps Script now reads journal metadata before fetching just the pending or requested operation, checks backup/history IDs without transferring stored JSON, preserves already-valid account headers, writes deleted-code registry rows together, completes contiguous journal chunks together, and locates deletions using the customer-code column. The per-deletion archive still completes before any live rows are removed. Partial writes, historical journals, legacy receipts, formulas, team boundaries and retry behavior are retained.
+
+A local Sheets mock with 30 stores and 200 large archived records measured single-store getValues text transfer falling from 45,711,564 to 123,739 characters; delete-all transfer fell from 45,798,724 to 111,801 characters. Delete-all value/append/delete writes fell from 49 to 11. These are synthetic data-transfer and call-count measurements, not timings for the live Google service. Regression tests enforce metadata-only history reads and batched writes.
+
+Install this Code.gs and deploy a new version of the existing Web App, keeping the existing URL and Script Properties.

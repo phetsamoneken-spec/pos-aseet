@@ -87,6 +87,8 @@ class StorageService {
   private currentUser: User | null = null;
   private listeners: (() => void)[] = [];
   private sheetLoadSequence = 0;
+  private deletionSupport:{endpoint:string;actorId:string;token:string}|null=null;
+  private rememberDeletionSupport(result:AccountResponse,endpoint:string,actorId:string,token:string){this.deletionSupport=result.deletionVersion===1?{endpoint,actorId,token}:null;}
   private sheetPublishMessage='';
   private sheetPublishCache:{key:string;text:string;value:PendingSheetPublish}|null=null;
   private sheetPublishKey(endpoint=this.settings.appsScriptUrl){return this.currentUser?'foc-pending-publish-v1:'+this.currentUser.id+':'+endpoint:'';}
@@ -135,6 +137,7 @@ class StorageService {
         const scope=user.role==='ADMIN'?'ALL':user.team;if(result.scope!==scope)throw Error('Invalid backup scope');
         const data=validateBusinessSnapshot(result.snapshot,scope);
         if(before!==businessFingerprint(this.businessSnapshot()))throw Error('Local data changed during backup. Retry to capture the latest edits.');
+        this.rememberDeletionSupport(result,endpoint,actor.id,token);
         this.applySharedResponse(result,actor);this.settings={...this.settings,...sharedSettings(result.settings)};safeRemoveItem('mkt_shared_settings_pending_v1');
         if(result.spreadsheetId)this.settings.spreadsheetId=result.spreadsheetId;
         this.customers=data.customers;this.conditions=data.conditions;this.contracts=data.contracts;this.budgets=data.budgets;this.transactions=data.transactions;
@@ -220,11 +223,12 @@ class StorageService {
     if(!wasClean){const recovered=await this.recoverLegacyCache('RETRY_SAVE');if(!recovered.success)return recovered;return this.retryPendingBusinessWrite();}
     const run=async():Promise<BusinessWriteResult>=>{
       this.writeFeedback={key,status:'saving',message:'ກຳລັງບັນທຶກໄປ Sheet… (Saving to Sheet…)'};this.notify();
-      if(pending.kind==='DELETE_CUSTOMER'||pending.kind==='DELETE_ALL_CUSTOMERS'){
+      if((pending.kind==='DELETE_CUSTOMER'||pending.kind==='DELETE_ALL_CUSTOMERS')&&!(this.deletionSupport?.endpoint===endpoint&&this.deletionSupport.actorId===actor.id&&this.deletionSupport.token===token)){
         const capability=await accountRequest(endpoint,'GET_BUSINESS_DATA');
         if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return {success:false,message:'Login again. The delete receipt is retained.'};}
         if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed; the delete receipt is retained.'};
         if(!capability.success||capability.deletionVersion!==1){const message=capability.success?'ກະລຸນາໃຫ້ Admin ຕິດຕັ້ງ Code.gs ໃໝ່ ແລະ Deploy → New version ເພື່ອລົບແຖວໃນ Sheet.':capability.message||'Could not verify Sheet deletion support';this.writeFeedback={key,status:'error',message};this.notify();return {success:false,message};}
+        this.rememberDeletionSupport(capability,endpoint,actor.id,token);
       }
       const result=await accountRequest(endpoint,'MUTATE_BUSINESS',{id:pending.id,kind:pending.kind,data:pending.data});
       if(this.currentUser?.id===actor.id&&this.settings.appsScriptUrl===endpoint&&!remoteSession(endpoint)){this.setCurrentUser(null);return {success:false,message:'Login again. The save receipt is retained.'};}
@@ -235,6 +239,7 @@ class StorageService {
           throw Error(result.message||'Sheet save failed');
         }
         if(result.writeVersion!==1||result.mutationId!==pending.id)throw Error('Update Code.gs and Deploy → New version to enable automatic Sheet saves.');
+        if((pending.kind==='DELETE_CUSTOMER'||pending.kind==='DELETE_ALL_CUSTOMERS')&&result.deletionVersion!==1)throw Error('Update Code.gs and Deploy → New version to remove rows from Sheet. The delete receipt is retained.');
         const user=result.user;if(!user||user.id!==actor.id||!['ADMIN','TEAM_USER'].includes(user.role)||user.role!=='ADMIN'&&!/^B[1-7]$/.test(user.team))throw Error('Invalid Sheet write account');
         const scope=user.role==='ADMIN'?'ALL':user.team;if(result.scope!==scope)throw Error('Invalid Sheet write scope');
         const snapshot=validateBusinessSnapshot(result.snapshot,scope);
@@ -243,6 +248,7 @@ class StorageService {
         // It includes unrelated changes made by another browser while we saved.
         this.customers=snapshot.customers;this.conditions=snapshot.conditions;this.contracts=snapshot.contracts;
         this.budgets=snapshot.budgets;this.transactions=snapshot.transactions;
+        this.rememberDeletionSupport(result,endpoint,actor.id,token);
         this.currentUser=user;safeSetItem(STORAGE_KEYS.AUTH,JSON.stringify(user));this.persistAll();this.recalculateContractStatuses();
         if(pending.kind==='REPRICE'){this.settings.pricePerCrate=Number(pending.data.price);safeSetItem(STORAGE_KEYS.SETTINGS,JSON.stringify(this.settings));}
         safeRemoveItem(key);if(pending.previousEndpoint)safeRemoveItem(businessWriteKey(actor.id,pending.previousEndpoint));if(wasClean)this.markBusinessSynced(endpoint,this.businessSnapshot(),result.businessRevision);
@@ -348,6 +354,7 @@ class StorageService {
       const data=validateBusinessSnapshot(result.snapshot,scope);
       if(before!==businessFingerprint(this.businessSnapshot()))return publish('local','ມີການແກ້ຂໍ້ມູນຂະນະກຳລັງໂຫຼດ. ແອັບເກັບການແກ້ໄຂໄວ້; ກະລຸນາ Sync ຫຼືສຳຮອງກ່ອນ.');
       this.customers=data.customers;this.conditions=data.conditions;this.contracts=data.contracts;this.budgets=data.budgets;this.transactions=data.transactions;
+      this.rememberDeletionSupport(result,endpoint,actor.id,token);
       const previousSheetId=this.settings.spreadsheetId;
       if(result.spreadsheetId)this.settings.spreadsheetId=result.spreadsheetId;
       this.markBusinessSynced(endpoint,this.businessSnapshot(),result.businessRevision);
@@ -366,6 +373,7 @@ class StorageService {
   }
 
   public init() {
+    this.deletionSupport=null;
     this.businessBaselineText=safeGetItem('mkt_sheet_business_baseline_v1');
     this.annualBudgetsPrepared=false;
     try {

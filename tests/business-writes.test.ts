@@ -59,10 +59,14 @@ for(let n=0;n<50&&!release;n++)await new Promise(resolve=>setTimeout(resolve,1))
 assert.equal((await storage.login('writer','Writer-test-42!')).success,true);release!();assert.equal((await waiting).success,false);assert.equal(storage.getCustomerByCode('HELD'),undefined);
 assert.equal((await storage.loadBusinessFromSheets()).success,true);
 assert.equal((await storage.commitBusinessChange('ADD_CUSTOMER',{...store,code:'WRONG',team:'B2'})).success,false);assert.equal(storage.getPendingBusinessWrite(),null);
-legacyDeletion=true;const deletesBefore=calls.filter(c=>c.action==='MUTATE_BUSINESS').length;
+legacyDeletion=true;assert.equal((await storage.loadBusinessFromSheets()).success,true);const deletesBefore=calls.filter(c=>c.action==='MUTATE_BUSINESS').length;
 assert.equal((await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:'AUTO1'})).success,false);assert.equal(calls.filter(c=>c.action==='MUTATE_BUSINESS').length,deletesBefore,'old backends must not acknowledge a status-only deletion as row removal');assert.ok(storage.getCustomerByCode('AUTO1'));assert.match(storage.getBusinessWriteState().message,/Code.gs/);
 legacyDeletion=false;assert.equal((await storage.retryPendingBusinessWrite()).success,true);assert.equal(storage.getCustomerByCode('AUTO1'),undefined);assert.equal(storage.getTransactions().length,0,'deleted-store receipts are archived outside the live tables');
 assert.equal(server.sheets.get('CUSTOMERS').rows.some((r:any[])=>r[0]==='AUTO1'),false);
 assert.equal((await storage.login('admin','Test-only-password-42!')).success,true);assert.ok(storage.getPendingBusinessWrite(),'original account retains its unacknowledged receipt');assert.equal((await storage.retryPendingBusinessWrite()).success,true);assert.ok(storage.getCustomerByCode('HELD'));
+assert.equal((await storage.commitBusinessChange('ADD_CUSTOMER',{...store,code:'FAST-DELETE'})).success,true);
+const deleteReads=calls.filter(c=>c.action==='GET_BUSINESS_DATA').length;
+assert.equal((await storage.commitBusinessChange('DELETE_CUSTOMER',{customerCode:'FAST-DELETE'})).success,true);
+assert.equal(calls.filter(c=>c.action==='GET_BUSINESS_DATA').length,deleteReads,'a validated same-session Sheet snapshot removes the extra delete preflight request');
 const mutationCalls=calls.filter(c=>c.action==='MUTATE_BUSINESS');assert.ok(mutationCalls.length>8);assert.equal(calls.filter(c=>c.action==='SYNC_BULK_DATA').length,0,'normal edits never upload a full cached snapshot');
 console.log('PASS: real storage → authenticated Apps Script → Sheet writes, lost-response/reload retry, rejection feedback, price publication, bulk/read guards, account switches and deletion history.');

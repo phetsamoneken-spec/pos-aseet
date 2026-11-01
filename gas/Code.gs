@@ -631,7 +631,7 @@ function userTables_() {
     else {
       const headers = sheet.getRange(1,1,1,spec[1].length).getValues()[0];
       spec[1].forEach(function(h,i) { if (headers[i] && headers[i] !== h) throw new Error('Unexpected column in ' + spec[0] + ': ' + h); });
-      sheet.getRange(1,1,1,spec[1].length).setValues([spec[1]]);
+      if(spec[1].some(function(header,index){return headers[index]!==header;}))sheet.getRange(1,1,1,spec[1].length).setValues([spec[1]]);
     }
   });
   const users=ss.getSheetByName('USERS');if(users.getLastRow()>1){const rows=users.getDataRange().getValues().slice(1);if(rows.some(function(row){return !row[10];}))users.getRange(2,11,rows.length,1).setValues(rows.map(function(row){return [row[10]||(row[7]===true||row[7]==='TRUE'?'ACTIVE':'INACTIVE')];}));}
@@ -2286,15 +2286,24 @@ const WRITE_JOURNAL_HEADERS_=['Operation ID','Actor ID','Request Hash','Plan Has
 function writeJournal_(){
  const ss=getSpreadsheet();let sheet=ss.getSheetByName('APP_WRITES');
  if(!sheet){sheet=ss.insertSheet('APP_WRITES');sheet.getRange(1,1,1,9).setValues([WRITE_JOURNAL_HEADERS_]);}
- const rows=sheet.getDataRange().getValues();
- if(JSON.stringify(rows[0].slice(0,9))!==JSON.stringify(WRITE_JOURNAL_HEADERS_))throw new Error('APP_WRITES: invalid journal headers');
+ const headers=sheet.getRange(1,1,1,9).getValues()[0];
+ if(JSON.stringify(headers)!==JSON.stringify(WRITE_JOURNAL_HEADERS_))throw new Error('APP_WRITES: invalid journal headers');
  return sheet;
 }
-function journalOperations_(sheet){
- const groups=new Map();sheet.getDataRange().getValues().slice(1).forEach(function(row,index){if(!row[0])return;const id=String(row[0]);if(!groups.has(id))groups.set(id,[]);groups.get(id).push({row:row,index:index+2});});return groups;
+function journalOperations_(sheet,onlyId,pendingOnly){
+ const groups=new Map(),last=sheet.getLastRow();if(last<2)return groups;
+ // Scan metadata without downloading the potentially large historical plans.
+ const metadata=sheet.getRange(2,1,last-1,7).getValues(),indices=new Map();
+ metadata.forEach(function(row,index){if(!row[0]||onlyId&&String(row[0])!==onlyId)return;const id=String(row[0]);if(!indices.has(id))indices.set(id,[]);indices.get(id).push({row:row,index:index+2});});
+ indices.forEach(function(parts,id){
+  if(pendingOnly&&parts.every(function(part){return part.row[4]==='DONE';}))return;
+  const start=parts[0].index,end=parts[parts.length-1].index;
+  const rows=sheet.getRange(start,1,end-start+1,9).getValues();
+  groups.set(id,rows.map(function(row,index){return {row:row,index:start+index};}).filter(function(part){return String(part.row[0])===id;}));
+ });return groups;
 }
 function replayBusinessWrite_(sheet,parts){
- const first=parts[0].row;if(first[4]==='DONE')return;
+ const first=parts[0].row;if(parts.every(function(part){return part.row[4]==='DONE';}))return;
  if(parts.length!==Number(first[6]))throw new Error('Incomplete APP_WRITES journal; contact Admin');
  const text=parts.slice().sort(function(a,b){return Number(a.row[5])-Number(b.row[5]);}).map(function(p){return p.row[7];}).join('');
  if(digest_(text)!==first[3])throw new Error('APP_WRITES checksum mismatch; contact Admin');
@@ -2303,11 +2312,13 @@ function replayBusinessWrite_(sheet,parts){
  const result=handleBulkSync(plan.tables);
  if(!result.success)throw new Error(result.error||result.message||'Sheet write incomplete; retry the same operation');
  if(plan.changes)appendChangeHistory_(getSpreadsheet(),String(first[0]),plan.actor||[String(first[1]),'user'],plan.action||'WRITE',plan.changes);
- parts.forEach(function(part){sheet.getRange(part.index,5).setValue('DONE');});SpreadsheetApp.flush();
+ const sorted=parts.slice().sort(function(a,b){return a.index-b.index;});
+ if(sorted.every(function(part,index){return part.index===sorted[0].index+index;}))sheet.getRange(sorted[0].index,5,sorted.length,1).setValues(sorted.map(function(){return ['DONE'];}));
+ else sorted.forEach(function(part){sheet.getRange(part.index,5).setValue('DONE');});SpreadsheetApp.flush();
 }
 function recoverBusinessWrites_(){
  const ss=getSpreadsheet(),sheet=ss.getSheetByName('APP_WRITES');if(!sheet)return;
- journalOperations_(writeJournal_()).forEach(function(parts){replayBusinessWrite_(sheet,parts);});
+ journalOperations_(writeJournal_(),null,true).forEach(function(parts){replayBusinessWrite_(sheet,parts);});
 }
 function writeText_(value,name,max){const text=String(value==null?'':value).trim();if(!text||text.length>(max||2000))throw new Error('Invalid '+name);return text;}
 function writeNumber_(value,name){const number=Number(value);if(!isFinite(number)||number<0)throw new Error('Invalid '+name);return number;}
@@ -2407,14 +2418,15 @@ function mutateBusiness_(payload,token,onlyCodes){
  const ss=userTables_(),actor=requireSession_(ss,token,false);recoverBusinessWrites_();ensureDailyDatabaseBackup_(ss,actor);
  const id=String(payload.id||''),kind=String(payload.kind||''),data=payload.data;
  if(!/^OP-[A-Za-z0-9-]{8,100}$/.test(id)||!data||typeof data!=='object'||Array.isArray(data))throw new Error('Invalid business write request');
- const sheet=writeJournal_(),hash=digest_(JSON.stringify({kind:kind,data:data}));let parts=journalOperations_(sheet).get(id);
+ const sheet=writeJournal_(),hash=digest_(JSON.stringify({kind:kind,data:data}));let parts=journalOperations_(sheet,id).get(id);
  if(parts){if(String(parts[0].row[1])!==String(actor[0])||parts[0].row[2]!==hash)throw new Error('Operation ID was already used');}
  else {
   let plan;try{plan=buildBusinessWrite_(kind,data,actor,readBusinessData_(token).snapshot,id,onlyCodes);}catch(error){return {success:false,writeVersion:1,retryable:false,message:String(error)};}
   const text=JSON.stringify(plan),chunks=[];for(let n=0;n<text.length;){let end=Math.min(n+28000,text.length);const last=text.charCodeAt(end-1);if(end<text.length&&last>=0xD800&&last<=0xDBFF)end--;chunks.push(text.slice(n,end));n=end;}
   const now=new Date().toISOString(),rows=chunks.map(function(chunk,index){return [id,String(actor[0]),hash,digest_(text),'PREPARED',index,chunks.length,chunk,now];});
-  if(sheet.getMaxRows()<sheet.getLastRow()+rows.length)sheet.insertRowsAfter(sheet.getMaxRows(),rows.length);
-  sheet.getRange(sheet.getLastRow()+1,1,rows.length,9).setValues(rows);SpreadsheetApp.flush();parts=journalOperations_(sheet).get(id);
+  const start=sheet.getLastRow()+1;
+  if(sheet.getMaxRows()<start+rows.length-1)sheet.insertRowsAfter(sheet.getMaxRows(),start+rows.length-1-sheet.getMaxRows());
+  sheet.getRange(start,1,rows.length,9).setValues(rows);SpreadsheetApp.flush();parts=rows.map(function(row,index){return {row:row,index:start+index};});
  }
  replayBusinessWrite_(sheet,parts);
  const planText=parts.slice().sort(function(a,b){return a.row[5]-b.row[5];}).map(function(p){return p.row[7];}).join(''),plan=JSON.parse(planText),read=readBusinessData_(token);
@@ -2467,7 +2479,7 @@ function resolvePrimaryDatabase_(source){
 function safeJsonChunks_(value){const text=typeof value==='string'?value:JSON.stringify(value),chunks=[];for(let i=0;i<text.length;){let end=Math.min(i+28000,text.length);const c=text.charCodeAt(end-1);if(end<text.length&&c>=0xD800&&c<=0xDBFF)end--;chunks.push(text.slice(i,end));i=end;}return {text:text,chunks:chunks,checksum:digest_(text)};}
 function archiveTable_(ss,name){let sheet=ss.getSheetByName(name);if(!sheet){sheet=ss.insertSheet(name);sheet.appendRow(['Archive ID','Created At','Actor ID','Actor','Reason','Chunk','Chunks','Checksum','Data JSON']);}return sheet;}
 function storeArchive_(ss,name,id,actor,reason,data){
- const sheet=archiveTable_(ss,name),packed=safeJsonChunks_(data),existing=sheet.getDataRange().getValues().slice(1).filter(function(r){return r[0]===id;});
+ const sheet=archiveTable_(ss,name),packed=safeJsonChunks_(data),existing=sheet.getLastRow()>1?sheet.getRange(2,1,sheet.getLastRow()-1,8).getValues().filter(function(r){return r[0]===id;}):[];
  if(existing.length){if(existing[0][2]!==String(actor[0])||existing[0][7]!==packed.checksum||existing.length!==packed.chunks.length)throw new Error('Backup ID conflict');return id;}
  const now=new Date().toISOString(),rows=packed.chunks.map(function(chunk,i){return [id,now,String(actor[0]),String(actor[1]),String(reason),i,packed.chunks.length,packed.checksum,chunk];});
  if(sheet.getMaxRows()<sheet.getLastRow()+rows.length)sheet.insertRowsAfter(sheet.getMaxRows(),rows.length);
@@ -2475,7 +2487,7 @@ function storeArchive_(ss,name,id,actor,reason,data){
 }
 function backupValues_(sheet){return sheet.getDataRange().getValues().map(function(row){return row.map(function(value){return Object.prototype.toString.call(value)==='[object Date]'?{$date:value.toISOString()}:value;});});}
 function ensureDailyDatabaseBackup_(ss,actor){
- const id='DAILY-'+businessToday(),sheet=ss.getSheetByName('DATABASE_BACKUPS');if(sheet&&sheet.getDataRange().getValues().slice(1).some(function(r){return r[0]===id;}))return id;
+ const id='DAILY-'+businessToday(),sheet=ss.getSheetByName('DATABASE_BACKUPS');if(sheet&&sheet.getLastRow()>1&&sheet.getRange(2,1,sheet.getLastRow()-1,1).getValues().some(function(r){return r[0]===id;}))return id;
  const tables={};CORE_DATABASE_SHEETS_.forEach(function(name){const sheet=ss.getSheetByName(name);if(sheet)tables[name]=backupValues_(sheet);});
  // User records/hashes are backed up; active session credentials are excluded.
  return storeArchive_(ss,'DATABASE_BACKUPS',id,actor,'AUTOMATIC_DAILY',{version:1,spreadsheetId:ss.getId(),createdAt:new Date().toISOString(),tables:tables,excluded:['SESSIONS']});
@@ -2483,7 +2495,7 @@ function ensureDailyDatabaseBackup_(ss,actor){
 function businessChanges_(before,tables){const changes=[];['customers','conditions','contracts','budgets','transactions'].forEach(function(key){if(!tables[key])return;tables[key].forEach(function(record){const id=key==='customers'?record.code:record.id,previous=(before[key]||[]).find(function(row){return (key==='customers'?row.code:row.id)===id;})||null;if(JSON.stringify(previous)!==JSON.stringify(record))changes.push({table:key,id:String(id),before:previous,after:record});});});return changes;}
 function appendChangeHistory_(ss,operation,actor,action,changes){
  if(!changes.length)return;let sheet=ss.getSheetByName('CHANGE_HISTORY');if(!sheet){sheet=ss.insertSheet('CHANGE_HISTORY');sheet.appendRow(['Event ID','Timestamp','Actor','Action','Table','Record ID','Operation ID','Chunk','Chunks','Checksum','Before / After JSON']);}
- const known=new Set(sheet.getDataRange().getValues().slice(1).map(function(row){return row[0]+':'+row[7];})),rows=[],now=new Date().toISOString();
+ const known=new Set((sheet.getLastRow()>1?sheet.getRange(2,1,sheet.getLastRow()-1,8).getValues():[]).map(function(row){return row[0]+':'+row[7];})),rows=[],now=new Date().toISOString();
  changes.forEach(function(change,index){const id='EV-'+digest_(operation+':'+change.table+':'+change.id+':'+index),packed=safeJsonChunks_({before:change.before,after:change.after});packed.chunks.forEach(function(chunk,i){if(!known.has(id+':'+i))rows.push([id,now,String(actor[1]),action,change.table,change.id,operation,i,packed.chunks.length,packed.checksum,chunk]);});});
  if(rows.length){if(sheet.getMaxRows()<sheet.getLastRow()+rows.length)sheet.insertRowsAfter(sheet.getMaxRows(),rows.length);sheet.getRange(sheet.getLastRow()+1,1,rows.length,11).setValues(rows);SpreadsheetApp.flush();}
 }
@@ -2527,18 +2539,21 @@ function applyCustomerDeletion_(ss,operation,actor,deletion){
  storeArchive_(ss,'DATABASE_BACKUPS',backupId,actor,'BEFORE_CUSTOMER_DELETE',deletion);
  let registry=ss.getSheetByName('DELETED_CUSTOMERS');if(!registry){registry=ss.insertSheet('DELETED_CUSTOMERS');registry.appendRow(DELETED_CUSTOMER_HEADERS_);}
  const known=deletedCustomerCodes_(ss);
- deletion.codes.forEach(function(code){if(!known.has(code)){registry.appendRow([code,deletion.deletedAt,String(actor[1]),operation,backupId]);known.add(code);}});
+ const registryRows=[];deletion.codes.forEach(function(code){if(!known.has(code)){registryRows.push([code,deletion.deletedAt,String(actor[1]),operation,backupId]);known.add(code);}});
+ if(registryRows.length){const start=registry.getLastRow()+1;if(registry.getMaxRows()<start+registryRows.length-1)registry.insertRowsAfter(registry.getMaxRows(),start+registryRows.length-1-registry.getMaxRows());registry.getRange(start,1,registryRows.length,5).setValues(registryRows);}
  SpreadsheetApp.flush();
  // Delete bottom-up so shifted row indices never select a different store.
  const selected=new Set(deletion.codes);
  Object.keys(deletion.tables).forEach(function(name){
   const sheet=ss.getSheetByName(name);if(!sheet)return;
-  const rows=sheet.getDataRange().getValues(),column=rows[0].indexOf('Customer Code');
+  const headers=sheet.getRange(1,1,1,deletion.tables[name].headers.length).getValues()[0],column=headers.indexOf('Customer Code'),count=sheet.getLastRow()-1;
   if(column<0)throw new Error(name+': missing Customer Code header');
-  for(let end=rows.length-1;end>=1;){
-   if(!selected.has(String(rows[end][column]))){end--;continue;}
-   let start=end;while(start>1&&selected.has(String(rows[start-1][column])))start--;
-   sheet.deleteRows(start+1,end-start+1);end=start-1;
+  if(count<1)return;
+  const codes=sheet.getRange(2,column+1,count,1).getValues();
+  for(let end=codes.length-1;end>=0;){
+   if(!selected.has(String(codes[end][0]))){end--;continue;}
+   let start=end;while(start>0&&selected.has(String(codes[start-1][0])))start--;
+   sheet.deleteRows(start+2,end-start+1);end=start-1;
   }
  });
  SpreadsheetApp.flush();

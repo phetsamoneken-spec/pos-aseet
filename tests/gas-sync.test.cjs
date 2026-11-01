@@ -9,6 +9,7 @@ function backend(options = {}) {
   const sheets = new Map();
   const failWrites = new Set();
   const failDeletes = new Set();
+  const calls=[];const track=(operation,sheet,row,col,height,width,values)=>{if(options.trackCalls)calls.push({operation,sheet,row,col,height,width,characters:values?values.reduce((sum,line)=>sum+line.reduce((n,value)=>n+(typeof value==='string'?value.length:0),0),0):0});};
   class Sheet {
     constructor(name) { this.name = name; this.rows = []; }
     getName(){return this.name;}
@@ -21,9 +22,10 @@ function backend(options = {}) {
     getRange(row, col, height = 1, width = 1) {
       const self = this;
       const range = {
-        getValues() { return Array.from({ length: height }, (_, i) => Array.from({ length: width }, (_, j) => self.rows[row - 1 + i]?.[col - 1 + j] ?? '')); },
-        getFormulas() { return range.getValues().map(r => r.map(v => typeof v === 'string' && v.startsWith('=') ? v : '')); },
+        getValues() { const values=Array.from({ length: height }, (_, i) => Array.from({ length: width }, (_, j) => self.rows[row - 1 + i]?.[col - 1 + j] ?? ''));track('getValues',self.name,row,col,height,width,values);return values; },
+        getFormulas() { const values=Array.from({length:height},(_,i)=>Array.from({length:width},(_,j)=>self.rows[row-1+i]?.[col-1+j]??'')).map(r => r.map(v => typeof v === 'string' && v.startsWith('=') ? v : ''));track('getFormulas',self.name,row,col,height,width,values);return values; },
         setValues(values) {
+          track('setValues',self.name,row,col,height,width,values);
           if (failWrites.has(self.name)) throw Error('simulated write failure');
           values.forEach((r, i) => { self.rows[row - 1 + i] ??= []; r.forEach((v, j) => { self.rows[row - 1 + i][col - 1 + j] = v; }); });
           return range;
@@ -33,10 +35,10 @@ function backend(options = {}) {
       };
       return range;
     }
-    appendRow(row) { this.rows.push([...row]); }
+    appendRow(row) {track('appendRow',this.name,this.rows.length+1,1,1,row.length,[row]);this.rows.push([...row]);}
     setFrozenRows() {}
     deleteRow(row) { this.deleteRows(row,1); }
-    deleteRows(row,count) { if(failDeletes.has(this.name))throw Error('simulated row deletion failure');this.rows.splice(row-1,count); }
+    deleteRows(row,count) {track('deleteRows',this.name,row,1,count,0);if(failDeletes.has(this.name))throw Error('simulated row deletion failure');this.rows.splice(row-1,count); }
   }
   const ss = { getSpreadsheetTimeZone:()=> 'Asia/Bangkok', getId: () => options.sheetId||'TEST_SHEET_ID_0123456789', getSheetByName: n => sheets.get(n), insertSheet(n) { const s = new Sheet(n); sheets.set(n, s); return s; } };
   const context = vm.createContext({
@@ -49,7 +51,7 @@ function backend(options = {}) {
     Logger: { log() {} }
   });
   vm.runInContext(source, context);
-  return { context, sheets, ss, failWrites, failDeletes, post(payload) { let result;try{result=context.handleBulkSync(payload);}catch(error){result={success:false,error:String(error)};} assert.equal(held, false); return result; } };
+  return { context, sheets, ss, failWrites, failDeletes, calls, post(payload) { let result;try{result=context.handleBulkSync(payload);}catch(error){result={success:false,error:String(error)};} assert.equal(held, false); return result; } };
 }
 const payload = () => ({
   spreadsheetId: 'YOUR_SPREADSHEET_ID',
@@ -467,4 +469,27 @@ test('retrying a legacy completed soft-delete receipt removes only its original 
  const text=JSON.stringify(plan);b.context.writeJournal_().appendRow([id,actor[0],b.context.digest_(JSON.stringify({kind,data})),b.context.digest_(text),'DONE',0,1,text,new Date().toISOString()]);
  incremental(b,login.token,'new-after-legacy','ADD_CUSTOMER',newStore('NEW'));
  const result=userRequest(b,'MUTATE_BUSINESS',{id,kind,data},login.token);assert.equal(result.success,true);assert.equal(result.mutationId,id);assert.ok(!b.sheets.get('CUSTOMERS').rows.some(row=>row[0]==='LEGACY'));assert.ok(b.sheets.get('CUSTOMERS').rows.some(row=>row[0]==='NEW'),'an old delete-all retry must not delete stores added later');
+});
+
+
+test('deletion batches registry and journal completion, skips archived payloads and avoids redundant header writes',()=>{
+ const b=backend({trackCalls:true});b.context.initializeDatabase();const login=userRequest(b,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});
+ for(let index=0;index<12;index++)assert.equal(incremental(b,login.token,'speed-store-'+index,'ADD_CUSTOMER',newStore('FAST-'+index)).success,true);
+ const journal=b.sheets.get('APP_WRITES'),backup=b.sheets.get('DATABASE_BACKUPS'),history=b.sheets.get('CHANGE_HISTORY');
+ const large='Historical payload '+'.'.repeat(28000);
+ for(let index=0;index<200;index++){
+  journal.appendRow(['OP-old-'+index,'old','hash','hash','DONE',0,1,large,'old']);
+  backup.appendRow(['OLD-'+index,'old','old','old','old',0,1,'hash',large]);
+  history.appendRow(['OLD-'+index,'old','old','old','customers','old','old',0,1,'hash',large]);
+ }
+ b.calls.length=0;
+ const deleted=incremental(b,login.token,'speed-delete-all','DELETE_ALL_CUSTOMERS',{});assert.equal(deleted.success,true);assert.equal(deleted.snapshot.customers.length,0);
+ const reads=b.calls.filter(call=>call.operation==='getValues');
+ assert.ok(!reads.some(call=>call.sheet==='APP_WRITES'&&call.width>=8&&call.height>=200),'completed plan JSON must not be fetched');
+ assert.ok(!reads.some(call=>call.sheet==='DATABASE_BACKUPS'&&call.width>=9),'backup JSON must not be fetched to find a backup ID');
+ assert.ok(!reads.some(call=>call.sheet==='CHANGE_HISTORY'&&call.width>=11),'before/after JSON must not be fetched for history de-duplication');
+ assert.equal(b.calls.filter(call=>call.operation==='setValues'&&['USERS','SESSIONS'].includes(call.sheet)).length,0,'valid account headers must not be rewritten');
+ assert.equal(b.calls.filter(call=>call.operation==='setValues'&&call.sheet==='DELETED_CUSTOMERS'&&call.row>1).length,1,'deleted-code registry writes are batched');
+ assert.equal(b.calls.filter(call=>call.operation==='setValues'&&call.sheet==='APP_WRITES'&&call.col===5).length,1,'all journal chunks finish in one write');
+ assert.ok(reads.some(call=>call.sheet==='BUDGETS'&&call.width===1),'row selection reads just the customer-code column');
 });
