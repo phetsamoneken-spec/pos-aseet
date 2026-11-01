@@ -62,6 +62,7 @@ export const UsersView: React.FC = () => {
   const [editEmail, setEditEmail] = useState('');
   const [editIsActive, setEditIsActive] = useState(true);
   const [editError, setEditError] = useState<string | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   // Notification Banner
   const [alertMessage, setAlertMessage] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -84,8 +85,9 @@ export const UsersView: React.FC = () => {
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingUser) return;
+    if (!editingUser || savingEdit) return;
     setEditError(null);
+    setSavingEdit(true);
 
     const res = await storage.updateUser(editingUser.id, {
       fullName: editFullName.trim(),
@@ -96,6 +98,7 @@ export const UsersView: React.FC = () => {
       email: editEmail.trim(),
       isActive: editIsActive
     });
+    setSavingEdit(false);
 
     if (res.success) {
       refreshUsers();
@@ -759,9 +762,10 @@ export const UsersView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  disabled={savingEdit}
                   className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-xl transition cursor-pointer shadow-md shadow-blue-600/20 active:scale-95"
                 >
-                  ບັນທຶກການແກ້ໄຂ
+                  {savingEdit ? 'ກຳລັງບັນທຶກ…' : 'ບັນທຶກການແກ້ໄຂ'}
                 </button>
               </div>
             </form>

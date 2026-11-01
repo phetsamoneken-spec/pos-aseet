@@ -31,3 +31,65 @@ globalThis.fetch=async()=>new Response(JSON.stringify({success:false,error:'Shee
 assert.equal((await storage.updateUser(admin.id,{fullName:'Changed'})).success,false);
 assert.notEqual(storage.getCurrentUser()!.fullName,'Changed');
 console.log('PASS: backend login, session storage, users sync, direct remote create, no new plaintext password in browser cache, failed writes do not mutate local accounts.');
+
+// Reproduce editing a browser-only account after connecting the Sheets backend.
+const legacy={id:'USR-B1',username:'MDE-B1',password:'CHANGE_ME_TEAM_B1_PASSWORD',fullName:'Old Team',role:'TEAM_USER' as const,team:'B1' as const,isActive:true,createdAt:'2026-01-01'};
+const pending={...legacy,id:'USR-B2',username:'MDE-B2',team:'B2' as const};
+storage.getUsers().push(legacy,pending);
+let sheetUsers: import('../src/types').User[]=[admin as import('../src/types').User];
+let creates=0;
+let denyCreate=false;
+const requests: {action:string;payload:any}[]=[];
+globalThis.fetch=async (_url,init)=>{
+ const request=JSON.parse(String(init?.body));requests.push(request);
+ assert.equal(request.authToken,'opaque-test-token');
+ if(request.action==='GET_USERS') return new Response(JSON.stringify({success:true,users:sheetUsers}));
+ if(request.action==='UPDATE_USER'||request.action==='RESET_USER_PASSWORD') {
+  const user=sheetUsers.find(user=>user.id===request.payload.id);
+  if(!user) return new Response(JSON.stringify({success:false,error:'Error: User not found'}));
+  const {password,...safe}=request.payload;Object.assign(user,safe);
+ } else if(request.action==='ADD_USER') {
+  if(denyCreate) return new Response(JSON.stringify({success:false,error:'Sheet write failed'}));
+  creates++;
+  const {password,...safe}=request.payload;
+  assert.ok(password.length>=8);
+  sheetUsers.push({...safe,id:'sheet-generated-'+creates,createdAt:'2026-01-01'});
+ } else throw Error('Unexpected action '+request.action);
+ return new Response(JSON.stringify({success:true,users:sheetUsers,user:admin,message:'Saved to USERS'}));
+};
+// An unset placeholder prompts for a real password rather than installing it.
+assert.equal((await storage.updateUser(legacy.id,{fullName:'New name'})).success,false);
+assert.equal(creates,0);
+assert.equal((await storage.updateUser(legacy.id,{fullName:'Phetsamone',password:'Chosen-test-password!',username:'MDE-B1-renamed'})).success,true);
+assert.equal(creates,1);
+assert.equal(sheetUsers.find(user=>user.username==='MDE-B1-renamed')!.fullName,'Phetsamone');
+assert.equal(storage.getUsers().some(user=>user.id==='USR-B1'),false);
+assert.equal(storage.getUsers().find(user=>user.username==='MDE-B1-renamed')!.password,undefined);
+assert.ok(storage.getUsers().some(user=>user.id===pending.id),'other pending placeholder accounts must remain available');
+assert.ok(!JSON.stringify([...local]).includes('Chosen-test-password!'));
+// Repeated saves use the canonical Sheet ID without creating duplicates.
+assert.equal((await storage.updateUser('sheet-generated-1',{fullName:'Updated again'})).success,true);
+assert.equal(creates,1);
+// Existing Sheet account with a different ID is resolved by its original username.
+sheetUsers.push({...pending,id:'server-team-b2',password:undefined});
+assert.equal((await storage.resetUserPassword(pending.id,'New-team-two-password!')).success,true);
+assert.equal(requests.at(-1)!.action,'RESET_USER_PASSWORD');
+assert.equal(requests.at(-1)!.payload.id,'server-team-b2');
+assert.equal(creates,1);
+assert.equal(storage.getUsers().some(user=>user.id===pending.id),false);
+// A failed migration preserves the browser record for retry.
+const retry={...legacy,id:'USR-B3',username:'MDE-B3',team:'B3' as const};
+storage.getUsers().push(retry);denyCreate=true;
+assert.equal((await storage.updateUser(retry.id,{password:'Another-test-password!'})).success,false);
+assert.ok(storage.getUsers().some(user=>user.id===retry.id));
+denyCreate=false;
+// A deleted remote account must not be silently recreated from its safe cache.
+sheetUsers=sheetUsers.filter(user=>user.id!=='sheet-generated-1');
+assert.equal((await storage.updateUser('sheet-generated-1',{fullName:'No resurrection'})).success,false);
+assert.equal(creates,1);
+// Authorization errors must not trigger lookup or migration.
+const before=requests.length;
+globalThis.fetch=async()=>new Response(JSON.stringify({success:false,error:'Admin permission required'}));
+assert.equal((await storage.updateUser(retry.id,{password:'Another-test-password!'})).success,false);
+assert.equal(requests.length,before);
+console.log('PASS: legacy account migration, placeholder validation, server ID reconciliation, retries, preserved pending accounts, and no resurrection of deleted Sheet accounts.');

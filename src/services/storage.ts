@@ -264,9 +264,10 @@ class StorageService {
   }
 
   public hasRemoteUserSession() { return !!remoteSession(this.settings.appsScriptUrl); }
-  private async remoteAccount(action: string, payload: Record<string, unknown> = {}) {
+  private async remoteAccount(action: string, payload: Record<string, unknown> = {}, migratedLocalId?: string) {
     const result = await accountRequest(this.settings.appsScriptUrl,action,payload);
     if (result.success) {
+      if (migratedLocalId) this.users = this.users.filter(user => user.id !== migratedLocalId);
       if (action === 'DELETE_USER') this.users = this.users.filter(user => user.id !== payload.id);
       if (action === 'UPDATE_USER' || action === 'RESET_USER_PASSWORD') this.users = this.users.map(user => user.id === payload.id ? { ...user, password:undefined } : user);
       if (action === 'UPDATE_PROFILE' && result.user) {
@@ -274,13 +275,13 @@ class StorageService {
         this.persistUsers();
       }
       if (result.users) {
-        if (action !== 'SYNC_USERS' && this.users.some(user => user.password && !user.password.startsWith('CHANGE_ME_'))) {
+        if (action !== 'SYNC_USERS' && this.users.some(user => user.password !== undefined)) {
           const local = this.users;
           this.users = result.users.map(user => {
             const old = local.find(item => item.username.toLowerCase() === user.username.toLowerCase());
             return old?.password && !old.password.startsWith('CHANGE_ME_') ? { ...user, password:old.password } : user;
           });
-          this.users.push(...local.filter(user => !result.users!.some(item => item.username.toLowerCase() === user.username.toLowerCase())));
+          this.users.push(...local.filter(user => user.password !== undefined && !result.users!.some(item => item.username.toLowerCase() === user.username.toLowerCase())));
         } else this.users = result.users;
         this.persistUsers();
       }
@@ -288,6 +289,25 @@ class StorageService {
       this.notify();
     }
     return {success:result.success,message:result.message || (result.success ? 'Saved to Sheet USERS' : 'Account operation failed')};
+  }
+  private async mutateSheetUser(action: 'UPDATE_USER' | 'RESET_USER_PASSWORD', id: string, data: Partial<User>) {
+    const local = this.users.find(user => user.id === id);
+    const result = await this.remoteAccount(action,{...data,id});
+    if (result.success || !/^(Error:\s*)?User not found$/i.test(result.message) || !local) return result;
+
+    // Browser accounts have different IDs from server-created accounts. Resolve
+    // the original username before changing it, and migrate only local records.
+    const listing = await accountRequest(this.settings.appsScriptUrl,'GET_USERS');
+    if (!listing.success || !listing.users) return {success:false,message:listing.message || 'Could not load Sheet users. Try again.'};
+    const remote = listing.users.find(user => user.username.toLowerCase() === local.username.toLowerCase());
+    if (remote) return this.remoteAccount(action,{...data,id:remote.id},id);
+    if (local.password === undefined) return {success:false,message:'This user no longer exists in Sheet. Reload the user list before editing.'};
+    const password = data.password || local.password;
+    if (!password || password.startsWith('CHANGE_ME_') || password.length < 8) return {success:false,message:'ບັນຊີນີ້ຍັງຢູ່ໃນ browser. ກະລຸນາຕັ້ງລະຫັດໃໝ່ຢ່າງໜ້ອຍ 8 ຕົວ ເພື່ອບັນທຶກລົງ Sheet.'};
+    return this.remoteAccount('ADD_USER',{
+      username:local.username,fullName:local.fullName,email:local.email,
+      role:local.role,team:local.team,isActive:local.isActive,...data,password
+    },id);
   }
   public async syncUsersToSheets() {
     if (this.currentUser?.role !== 'ADMIN') return {success:false,message:'Admin permission required'};
@@ -961,7 +981,7 @@ class StorageService {
     id: string,
     data: Partial<Pick<User, 'username' | 'password' | 'fullName' | 'role' | 'team' | 'isActive' | 'email'>>
   ): Promise<{ success: boolean; message: string }> {
-    if (this.settings.appsScriptUrl) return this.remoteAccount('UPDATE_USER',{id,...data});
+    if (this.settings.appsScriptUrl) return this.mutateSheetUser('UPDATE_USER',id,data);
     const user = this.users.find((u) => u.id === id);
     if (!user) {
       return { success: false, message: 'User not found' };
@@ -992,7 +1012,7 @@ class StorageService {
   }
 
   public async resetUserPassword(id: string, newPassword?: string): Promise<{ success: boolean; message: string; password?: string }> {
-    if (this.settings.appsScriptUrl) return this.remoteAccount('RESET_USER_PASSWORD',{id,password:newPassword});
+    if (this.settings.appsScriptUrl) return this.mutateSheetUser('RESET_USER_PASSWORD',id,{password:newPassword});
     const user = this.users.find((u) => u.id === id);
     if (!user) {
       return { success: false, message: 'User not found' };
