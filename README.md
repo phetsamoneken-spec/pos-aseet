@@ -2,7 +2,7 @@
 
 Existing MKT Budget React/Vite application, including five dashboard themes, customers, contract cycles, budgets, transactions, reports, user management, and Google Apps Script integration.
 
-Source version: **2026.11.01.5**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using the backend URL already saved in Settings. Theme selection is in Settings and saves immediately per user in this browser. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. This frontend fix works with the existing 2026.10.31.6 Code.gs backend.
+Source version: **2026.11.01.6**. Includes Google Sheets user accounts, backend login, and bcrypt password storage. Login asks only for username and password, using the backend URL already saved in Settings. Theme selection is in Settings and saves immediately per user in this browser. Navigation starts collapsed behind a hamburger button on every screen size and closes after a selection, outside click, or Escape. Store names and their table heading stay on one line in a wider column; the table scrolls horizontally on smaller screens. Editing a browser-only account with a new password migrates it to USERS; existing Sheet accounts are matched by their original username when browser and Sheet IDs differ. Other pending browser accounts are retained. This frontend fix works with the existing 2026.10.31.6 Code.gs backend.
 
 ## Run locally
 

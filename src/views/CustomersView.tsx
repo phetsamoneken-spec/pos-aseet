@@ -391,7 +391,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
                 </th>
                 <th
                   onClick={() => toggleSort('name')}
-                  className="py-3 px-4 cursor-pointer hover:bg-slate-100 transition"
+                  className="min-w-[240px] py-3 px-4 cursor-pointer hover:bg-slate-100 transition whitespace-nowrap"
                 >
                   <div className="flex items-center gap-1">
                     <span>{t.customerName}</span>
@@ -450,8 +450,8 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
                       <td className="py-3 px-4 font-mono font-bold text-blue-700 whitespace-nowrap">
                         {item.customer.code}
                       </td>
-                      <td className="py-3 px-4">
-                        <div className="font-bold text-slate-900 leading-tight">
+                      <td className="min-w-[240px] py-3 px-4 whitespace-nowrap">
+                        <div className="font-bold text-slate-900 leading-tight whitespace-nowrap">
                           {item.customer.name}
                         </div>
                         <div className="text-[11px] text-slate-400 truncate max-w-xs">
