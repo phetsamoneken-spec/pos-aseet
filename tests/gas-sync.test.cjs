@@ -44,7 +44,7 @@ function backend(options = {}) {
     Logger: { log() {} }
   });
   vm.runInContext(source, context);
-  return { context, sheets, ss, failWrites, post(payload) { const result = context.doPost({ postData: { contents: JSON.stringify({ action: 'SYNC_BULK_DATA', payload }) } }); assert.equal(held, false); return result; } };
+  return { context, sheets, ss, failWrites, post(payload) { let result;try{result=context.handleBulkSync(payload);}catch(error){result={success:false,error:String(error)};} assert.equal(held, false); return result; } };
 }
 const payload = () => ({
   spreadsheetId: 'YOUR_SPREADSHEET_ID',
@@ -240,4 +240,49 @@ test('business reads use named columns, preserve dates/zero balances, and reject
 test('legacy public customer GET does not bypass authenticated team-scoped reads',()=>{
  const b=backend();assert.equal(b.context.doGet({parameter:{action:'getCustomers',team:'ALL'}}).success,false);
  assert.equal(b.context.doGet({parameter:{action:'ping'}}).success,true);
+});
+
+test('only a signed-in Admin can publish Excel data and shared settings; team users receive the Admin configuration',()=>{
+ const b=backend();b.context.initializeDatabase();
+ const login=userRequest(b,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});
+ assert.equal(userRequest(b,'SYNC_BULK_DATA',payload()).success,false);
+ assert.equal(userRequest(b,'SAVE_SHARED_SETTINGS',{settings:{language:'en'},role:'ADMIN'}).success,false);
+ assert.equal(userRequest(b,'ADD_USER',{username:'policy-reader',password:'Team-policy-test!',fullName:'Policy Reader',role:'TEAM_USER',team:'B1'},login.token).success,true);
+ const team=userRequest(b,'AUTH_LOGIN',{username:'policy-reader',password:'Team-policy-test!'});
+ const before=JSON.stringify(b.sheets.get('SETTINGS').rows);
+ assert.equal(userRequest(b,'SYNC_BULK_DATA',{...payload(),role:'ADMIN'},team.token).success,false);
+ assert.equal(userRequest(b,'SAVE_SHARED_SETTINGS',{settings:{pricePerCrate:1},role:'ADMIN'},team.token).success,false);
+ assert.equal(JSON.stringify(b.sheets.get('SETTINGS').rows),before);
+ assert.equal(userRequest(b,'SYNC_BULK_DATA',payload(),login.token).success,true);
+ const common={language:'en',currencyCode:'USD',currencySymbol:'$',currencyPosition:'before',pricePerCrate:250000,warningThresholdPercent:85,contractAlertDays:45,dashboardTheme:'minimal'};
+ assert.equal(userRequest(b,'SAVE_SHARED_SETTINGS',{settings:{...common,appsScriptUrl:'must-not-be-shared'}},login.token).success,true);
+ const read=userRequest(b,'GET_SHARED_SETTINGS',{role:'ADMIN',team:'ALL'},team.token);
+ assert.equal(read.success,true);assert.equal(read.settingsVersion,1);assert.deepEqual(JSON.parse(JSON.stringify(read.settings)),common);
+ assert.equal(read.user.team,'B1');assert.equal(read.settings.appsScriptUrl,undefined);
+ const data=userRequest(b,'GET_BUSINESS_DATA',{},team.token);
+ assert.equal(data.settings.dashboardTheme,'minimal');assert.equal(data.settings.currencyCode,'USD');assert.equal(data.user.role,'TEAM_USER');
+ const saved=JSON.stringify(b.sheets.get('SETTINGS').rows);
+ assert.equal(userRequest(b,'SAVE_SHARED_SETTINGS',{settings:{pricePerCrate:-1}},login.token).success,false);
+ assert.equal(JSON.stringify(b.sheets.get('SETTINGS').rows),saved);
+ assert.equal(userRequest(b,'UPDATE_BUDGET',{budgetId:'B1',newAmount:1},team.token).success,false);
+ assert.equal(userRequest(b,'NEW_CONTRACT_CYCLE',{customerCode:'C1'},team.token).success,false);
+ assert.equal(userRequest(b,'ADD_TRANSACTION',{customerCode:'not-your-store',team:'B1'},team.token).success,false);
+ const row=b.sheets.get('USERS').rows.find(row=>row[1]==='policy-reader');row[6]='B2';
+ assert.equal(userRequest(b,'GET_SHARED_SETTINGS',{},team.token).user.team,'B2','server assignment updates without a new login');
+});
+
+test('legacy team transaction writes cannot forge customer/contract/budget links or spreadsheet formulas',()=>{
+ const b=backend();b.context.initializeDatabase();const p=payload();p.budgets[0].customerCode='C1';
+ p.customers.push({code:'C2',name:'Other team',team:'B2'});p.contracts.push({id:'CT2',customerCode:'C2',team:'B2',cycleNumber:1});p.budgets.push({id:'BD2',contractId:'CT2',customerCode:'C2',team:'B2',annualAmount:100});
+ assert.equal(b.post(p).success,true);
+ const admin=userRequest(b,'AUTH_LOGIN',{username:'admin',password:'Test-only-password-42!'});
+ userRequest(b,'ADD_USER',{username:'txn-reader',password:'Transaction-test!',fullName:'Team',role:'TEAM_USER',team:'B1'},admin.token);
+ const team=userRequest(b,'AUTH_LOGIN',{username:'txn-reader',password:'Transaction-test!'});
+ const before=b.sheets.get('BUDGET_TRANSACTIONS').rows.length;
+ assert.equal(userRequest(b,'ADD_TRANSACTION',{customerCode:'C1',contractId:'CT2',budgetId:'BD2',amount:1},team.token).success,false);
+ assert.equal(b.sheets.get('BUDGET_TRANSACTIONS').rows.length,before);
+ const saved=userRequest(b,'ADD_TRANSACTION',{id:'forged-id',customerCode:'C1',customerName:'forged-name',team:'B2',createdBy:'admin',contractId:'CT1',budgetId:'B1',amount:1,date:'2026-11-01',description:'=1+1',category:'Other'},team.token);
+ assert.equal(saved.success,true);
+ const row=b.sheets.get('BUDGET_TRANSACTIONS').rows.at(-1);
+ assert.notEqual(row[0],'forged-id');assert.equal(row[3],'ລູກຄ້າ');assert.equal(row[4],'B1');assert.equal(row[11],'txn-reader');assert.equal(row[8],"'=1+1");
 });

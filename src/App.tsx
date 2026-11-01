@@ -43,8 +43,21 @@ export default function App() {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const { theme, setTheme } = useDashboardTheme(currentUser?.username || 'guest');
   const backendUrl=storage.getSettings().appsScriptUrl;
+  const sharedTheme=storage.getSettings().dashboardTheme;
+  useEffect(()=>{if(sharedTheme)setTheme(sharedTheme);},[currentUser?.id,sharedTheme]);
+  useEffect(()=>{if(currentUser?.role!=='ADMIN'&&['settings','users'].includes(currentView))setCurrentView('dashboard');},[currentUser?.role,currentView]);
   useEffect(()=>{
-    if(currentUser && backendUrl && storage.hasRemoteUserSession())void storage.loadBusinessFromSheets();
+    let lastRead=0;
+    const refresh=async()=>{
+      if(document.visibilityState==='hidden'||Date.now()-lastRead<5000)return;
+      if(currentUser && backendUrl && storage.hasRemoteUserSession()){
+        lastRead=Date.now();
+        if(storage.hasUnsyncedBusinessData()){const common=await storage.refreshSharedSettings();if(!common.success)return;}
+        await storage.loadBusinessFromSheets();
+      }
+    };
+    refresh();window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);
+    return ()=>{window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};
   },[currentUser?.id,backendUrl]);
 
   // Modal States
@@ -100,7 +113,7 @@ export default function App() {
   };
 
   return (
-    <div className={`mkt-shell theme-${theme} min-h-screen flex flex-col font-sans`}>
+    <div className={`mkt-shell theme-${isAdmin?theme:(sharedTheme||'glass')} min-h-screen flex flex-col font-sans`}>
       
       {/* Global Header */}
       <Header
@@ -185,7 +198,7 @@ export default function App() {
             <UsersView />
           )}
 
-          {currentView === 'settings' && (
+          {currentView === 'settings' && isAdmin && (
             <SettingsView
               theme={theme}
               onThemeChange={setTheme}

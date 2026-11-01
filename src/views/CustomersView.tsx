@@ -230,14 +230,14 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
         <div className="flex items-center gap-2 flex-wrap">
           
           {/* Upload Excel Button */}
-          <button
+          {isAdmin && <button
             onClick={() => setShowUploadExcelModal(true)}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-xl transition cursor-pointer shadow-xs active:scale-95"
             title="Upload Excel (.xlsx, .xls, .csv)"
           >
             <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
             <span>{lang === 'lo' ? 'ອັບໂຫຼດ Excel' : 'Upload Excel'}</span>
-          </button>
+          </button>}
 
           {/* Export CSV/Excel */}
           <button
@@ -284,17 +284,17 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
             </h3>
             <p className="text-xs text-amber-800 max-w-md mx-auto mt-1">
               {lang === 'lo'
-                ? 'ທ່ານສາມາດອັບໂຫຼດໄຟລ໌ Excel ທີ່ມີ 8 ຖັນຂອງທີມການຕະຫຼາດໄດ້ເລີຍ ຫຼື ໂຫຼດຂໍ້ມູນຕົວຢ່າງ'
-                : 'Upload your marketing team Excel file with the 8 columns, or load the pre-seeded customer data.'}
+                ? (isAdmin ? 'ອັບໂຫຼດ Excel ຫຼືໂຫຼດຂໍ້ມູນຈາກ Sheet ກາງ.' : 'ກົດໂຫຼດຈາກ Sheet ເພື່ອເບິ່ງລູກຄ້າໃນທີມທີ່ Admin ກຳນົດໃຫ້ທ່ານ.')
+                : (isAdmin ? 'Upload Excel or load the shared Sheet data.' : 'Load from Sheet to see the customers assigned to your team by Admin.')}
             </p>
           </div>
           <div className="flex items-center justify-center gap-2 pt-2">
-            <button
+            {isAdmin && <button
               onClick={() => setShowUploadExcelModal(true)}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-600/20 cursor-pointer"
             >
               {lang === 'lo' ? 'ອັບໂຫຼດໄຟລ໌ Excel ດຽວນີ້' : 'Upload Excel File Now'}
-            </button>
+            </button>}
             {isAdmin && (
               <button
                 onClick={() => {
@@ -556,7 +556,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({
       </div>
 
       {/* Upload Excel Modal */}
-      {showUploadExcelModal && (
+      {showUploadExcelModal && isAdmin && (
         <UploadExcelModal
           onClose={() => setShowUploadExcelModal(false)}
           onSuccess={(count) => {

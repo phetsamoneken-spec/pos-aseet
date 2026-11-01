@@ -85,7 +85,8 @@ function handleBulkSync(p) {
   const data = Object.assign({}, p);
   if (p.settings !== undefined) {
     if (!p.settings || typeof p.settings !== 'object' || Array.isArray(p.settings)) throw new Error('settings must be an object');
-    const allowed = ['spreadsheetId','appsScriptUrl','currencyCode','currencySymbol','currencyPosition','pricePerCrate','contractAlertDays','warningThresholdPercent','syncMode','language'];
+    normalizeSharedSettings_(p.settings);
+    const allowed = ['dashboardTheme','spreadsheetId','appsScriptUrl','currencyCode','currencySymbol','currencyPosition','pricePerCrate','contractAlertDays','warningThresholdPercent','syncMode','language'];
     data.settingsRows = allowed.filter(function(key) { return Object.prototype.hasOwnProperty.call(p.settings, key); }).map(function(key) {
       return { key: key, value: key === 'spreadsheetId' ? spreadsheetId : p.settings[key], description: 'Synced from MKT app', updatedAt: new Date().toISOString() };
     });
@@ -172,6 +173,10 @@ function doPost(e) {
     const action = postData.action;
     const payload = postData.payload || {};
     if (action === 'GET_BUSINESS_DATA') return jsonResponse(readBusinessData_(postData.authToken));
+    if (action === 'GET_SHARED_SETTINGS') { const ss=userTables_(),actor=requireSession_(ss,postData.authToken,false);return jsonResponse({success:true,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor)}); }
+    if (action === 'SAVE_SHARED_SETTINGS') return jsonResponse(saveSharedSettings_(payload,postData.authToken));
+    if (action === 'SYNC_BULK_DATA') requireSession_(userTables_(),postData.authToken,true);
+    if (['ADD_TRANSACTION','CANCEL_TRANSACTION','NEW_CONTRACT_CYCLE','UPDATE_BUDGET'].indexOf(action)>=0) authorizeLegacyBusiness_(action,payload,postData.authToken);
     const userActions = ['AUTH_LOGIN','AUTH_ME','AUTH_LOGOUT','GET_USERS','SYNC_USERS','ADD_USER','UPDATE_USER','RESET_USER_PASSWORD','DELETE_USER','UPDATE_PROFILE'];
     if (userActions.indexOf(action) >= 0) return jsonResponse(handleUserAction_(action,payload,postData.authToken));
 
@@ -2049,5 +2054,63 @@ function readBusinessData_(token) {
   snapshot.transactions=snapshot.transactions.filter(function(row){return codes.has(row.customerCode) && (!row.contractId || contractIds.has(row.contractId)) && (scope==='ALL' || !row.team || row.team===scope);});
   ['contracts','budgets','transactions'].forEach(function(key){snapshot[key].forEach(function(row){if(!row.team) row.team=snapshot.customers.find(function(c){return c.code===row.customerCode;}).team;});});
   snapshot.transactions.forEach(function(row){row.status=row.status || 'ACTIVE';});
-  return {success:true,dataVersion:1,scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
+  return {success:true,dataVersion:1,settingsVersion:1,settings:readSharedSettings_(ss),user:publicUser_(actor),scope:scope,snapshot:snapshot,spreadsheetId:ss.getId(),loadedAt:new Date().toISOString()};
+}
+
+
+const COMMON_SETTING_KEYS_=['currencyCode','currencySymbol','currencyPosition','pricePerCrate','contractAlertDays','warningThresholdPercent','language','dashboardTheme'];
+function normalizeSharedSettings_(settings){
+ if(!settings || typeof settings!=='object' || Array.isArray(settings))throw new Error('Invalid shared settings');
+ const result={},options={currencyCode:['LAK','USD','THB'],currencyPosition:['before','after'],language:['lo','en'],dashboardTheme:['glass','executive','neon','minimal','luxury']};
+ COMMON_SETTING_KEYS_.forEach(function(key){
+  if(settings[key]===undefined)return;let value=settings[key];
+  if(options[key] && options[key].indexOf(value)<0)throw new Error('Invalid shared setting: '+key);
+  if(key==='currencySymbol' && (typeof value!=='string'||!value.length||value.length>8))throw new Error('Invalid currency symbol');
+  if(['pricePerCrate','contractAlertDays','warningThresholdPercent'].indexOf(key)>=0){
+   value=Number(value);
+   if(!isFinite(value)||value<0||key!=='contractAlertDays'&&value===0||key==='warningThresholdPercent'&&value>100||key==='contractAlertDays'&&value>3650)throw new Error('Invalid shared number: '+key);
+  }
+  result[key]=value;
+ });return result;
+}
+function readSharedSettings_(ss){
+ const sheet=ss.getSheetByName('SETTINGS'),raw={};
+ if(sheet){const rows=sheet.getDataRange().getValues(),headers=rows[0]||[],key=headers.indexOf('Setting Key'),value=headers.indexOf('Setting Value');
+  if(key<0||value<0)throw new Error('SETTINGS: missing key/value headers');
+  rows.slice(1).forEach(function(row){if(COMMON_SETTING_KEYS_.indexOf(row[key])>=0)raw[row[key]]=row[value];});
+ }
+ return normalizeSharedSettings_(raw);
+}
+function saveSharedSettings_(payload,token){
+ const ss=userTables_();requireSession_(ss,token,true);
+ const settings=normalizeSharedSettings_(payload.settings),result=handleBulkSync({settings:settings});
+ if(!result.success)return result;
+ return {success:true,settingsVersion:1,settings:readSharedSettings_(ss),message:'Admin settings published to the shared Sheet.'};
+}
+function authorizeLegacyBusiness_(action,payload,token){
+ const ss=userTables_(),actor=requireSession_(ss,token,action==='NEW_CONTRACT_CYCLE'||action==='UPDATE_BUDGET');
+ if(actor[5]==='ADMIN')return;
+ if(!/^B[1-7]$/.test(String(actor[6])))throw new Error('Invalid assigned team');
+ let team;
+ if(action==='ADD_TRANSACTION'){
+  const sheet=ss.getSheetByName('CUSTOMERS'),rows=sheet?sheet.getDataRange().getValues():[];
+  const row=rows.slice(1).find(function(row){return String(row[0])===String(payload.customerCode);});
+  if(!row||row[7]==='DELETED')throw new Error('Customer not found');team=row[2];
+  const contracts=ss.getSheetByName('CONTRACTS'),budgets=ss.getSheetByName('BUDGETS');
+  const contract=contracts&&contracts.getDataRange().getValues().slice(1).find(function(r){return String(r[0])===String(payload.contractId);});
+  const budget=budgets&&budgets.getDataRange().getValues().slice(1).find(function(r){return String(r[0])===String(payload.budgetId);});
+  if(!contract||String(contract[1])!==String(payload.customerCode)||contract[3]&&contract[3]!==team||!budget||String(budget[1])!==String(payload.contractId)||String(budget[2])!==String(payload.customerCode)||budget[3]&&budget[3]!==team)throw new Error('Invalid transaction customer/contract/budget references');
+  const amount=Number(payload.amount);if(!isFinite(amount)||amount<=0)throw new Error('Invalid transaction amount');
+  payload.amount=amount;payload.customerName=row[1];payload.id='TXN-'+Utilities.getUuid();
+  payload.date=payload.date||Utilities.formatDate(new Date(),ss.getSpreadsheetTimeZone(),'yyyy-MM-dd');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(payload.date)))throw new Error('Invalid transaction date');
+  ['category','description','invoiceRef'].forEach(function(key){payload[key]=syncCell_(String(payload[key]||''));});
+ }else if(action==='CANCEL_TRANSACTION'){
+  const sheet=ss.getSheetByName('BUDGET_TRANSACTIONS'),rows=sheet?sheet.getDataRange().getValues():[];
+  const row=rows.slice(1).find(function(row){return String(row[0])===String(payload.txnId);});
+  if(!row)throw new Error('Transaction not found');team=row[4];
+  payload.reason=syncCell_(String(payload.reason||'Cancelled by user'));
+ }
+ if(team!==actor[6])throw new Error('Permission denied for this team');
+ payload.team=team;payload.createdBy=actor[1];payload.cancelledBy=actor[1];
 }

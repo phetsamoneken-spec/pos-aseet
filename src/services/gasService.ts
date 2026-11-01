@@ -16,6 +16,14 @@ export interface GasResponse<T = unknown> {
 }
 
 export class GasService {
+  public static async saveSharedSettings():Promise<{success:boolean;message:string}>{
+    if(!storage.canManageSettings())return {success:false,message:'Admin permission required'};
+    const settings={...storage.getSettings()};
+    const result=await this.sendToGas('SAVE_SHARED_SETTINGS',{settings});
+    if(result.success && (result as {settingsVersion?:number}).settingsVersion!==1)return {success:false,message:'Update Code.gs and deploy a new Web App version to publish Admin settings.'};
+    if(result.success)storage.markSharedSettingsPublished(settings);
+    return {success:result.success===true,message:result.message||result.error||(result.success?'Admin settings saved to the shared Sheet.':'Settings were not published to the shared Sheet.')};
+  }
   /**
    * Test connection to deployed Google Apps Script Web App
    */
@@ -152,7 +160,10 @@ export class GasService {
     if (res.success === true && res.syncVersion !== 2) {
       return { success: false, message: 'The backend is still the old version. Deploy the unified Code.gs as a new Web App version, then sync again.' };
     }
-    if(res.success===true) storage.markBusinessSynced((scriptUrl || settings.appsScriptUrl).trim(),payload as unknown as import('./businessData').BusinessSnapshot);
+    if(res.success===true){
+      storage.markBusinessSynced((scriptUrl || settings.appsScriptUrl).trim(),payload as unknown as import('./businessData').BusinessSnapshot);
+      storage.markSharedSettingsPublished(payload.settings);
+    }
     return {
       success: res.success === true,
       message: res.message || res.error || (res.success ? 'Synced successfully to Google Sheets!' : 'Sync failed.')

@@ -35,7 +35,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
   const t = translations[lang];
   const isAdmin = currentUser?.role === 'ADMIN';
 
-  const [formData, setFormData] = useState<AppSettings>({ ...settings });
+  const [formData, setFormData] = useState<AppSettings>({ ...settings,dashboardTheme:settings.dashboardTheme??theme });
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState<{ success: boolean; message: string } | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -47,13 +47,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
   } | null>(null);
 
   const [syncingSheets, setSyncingSheets] = useState(false);
+  const [savingShared,setSavingShared]=useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const saveCurrentSettings = () => {
     try {
       const normalized = { ...formData, appsScriptUrl: formData.appsScriptUrl.trim() };
       const result = storage.updateSettings(normalized);
-      setFormData(normalized);
+      setFormData({...storage.getSettings()});
       setSaveFeedback({
         success: result.persisted,
         message: result.persisted
@@ -67,9 +68,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
     }
   };
 
-  const handleSaveSettings = (e: React.FormEvent) => {
+  const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
-    saveCurrentSettings();
+    if(!isAdmin||savingShared||!saveCurrentSettings())return;
+    if(storage.getSettings().appsScriptUrl){
+      setSavingShared(true);
+      setSaveFeedback({success:true,message:'ກຳລັງບັນທຶກຄ່າ Admin ໄປ Sheet ກາງ…'});
+      try{
+        const result=await GasService.saveSharedSettings();
+        setSaveFeedback({success:result.success,message:result.success?'ບັນທຶກຄ່າ Admin ໄປ Sheet ກາງແລ້ວ. User ຈະໄດ້ຮັບຄ່ານີ້ເມື່ອໂຫຼດຂໍ້ມູນ.':'ຄ່າຢູ່ໃນ browser ແຕ່ຍັງບໍ່ເຜີຍແຜ່: '+result.message});
+      }finally{setSavingShared(false);}
+    }
   };
 
   const handleCurrencyChange = (curr: 'LAK' | 'USD' | 'THB') => {
@@ -141,6 +150,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
     }
   };
 
+  if(!isAdmin)return <p role="alert">Admin permission required.</p>;
   return (
     <div className="space-y-6 max-w-6xl w-full">
       
@@ -157,7 +167,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
         </p>
       </div>
 
-      <ThemeSwitcher theme={theme} onChange={onThemeChange} language={lang} />
+      <ThemeSwitcher theme={theme} onChange={value=>{onThemeChange(value);setFormData(previous=>({...previous,dashboardTheme:value}));}} language={lang} />
 
       {saveSuccess && (
         <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center gap-2 shadow-xs">
@@ -281,15 +291,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
               {isAdmin && (
                 <button
                   type="button"
-                  onClick={() => {
+                  disabled={syncingSheets||savingShared}
+                  onClick={async () => {
+                    if(!formRef.current?.reportValidity()||!saveCurrentSettings())return;
                     const price = formData.pricePerCrate || 240000;
                     const res = storage.recalculateBudgetsByPricePerCrate(price);
-                    setSaveSuccess(true);
-                    alert(
-                      lang === 'lo'
-                        ? `ຄິດໄລ່ຄືນງົບປະມານລູກຄ້າ ${res.updatedCount} ລາຍການ ຕາມລາຄາ ${storage.formatCurrency(price)}/ລັງ ສຳເລັດແລ້ວ!`
-                        : `Successfully recalculated budgets for ${res.updatedCount} customers at ${storage.formatCurrency(price)}/crate!`
-                    );
+                    if(!res.success)return;
+                    if(storage.getSettings().appsScriptUrl){
+                      setSyncingSheets(true);
+                      try{const published=await GasService.syncAllToGoogleSheets();setSyncResult(published);setSaveSuccess(published.success);}finally{setSyncingSheets(false);}
+                    }else setSaveSuccess(true);
                   }}
                   className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
                 >
@@ -398,6 +409,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
             <div className="flex items-center gap-2">
               <input
                 type="url"
+                readOnly={Boolean(import.meta.env?.PROD)}
                 disabled={!isAdmin}
                 placeholder="https://script.google.com/macros/s/AKfycb.../exec"
                 value={formData.appsScriptUrl}
@@ -497,7 +509,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onOpenGasDocs, theme
             {saveFeedback && <p role="status" aria-live="polite" className={`flex-1 text-xs font-semibold ${saveFeedback.success ? 'text-emerald-800' : 'text-rose-700'}`}>{saveFeedback.message}</p>}
             <button
               type="submit"
-              disabled={syncingSheets}
+              disabled={syncingSheets||savingShared}
               aria-label={lang === 'lo' ? 'ບັນທຶກການຕັ້ງຄ່າ' : 'Save settings'}
               className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow-md shadow-blue-600/30 transition cursor-pointer active:scale-95"
             >

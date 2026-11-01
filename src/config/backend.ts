@@ -5,8 +5,9 @@ export function isRetiredBackend(value:unknown):boolean { return typeof value===
 
 const buildDefault = import.meta.env?.PROD ? DEPLOYED_BACKEND_URL : '';
 
-// Keep an Admin's explicit configuration; repair missing/blank settings on new
-// devices and browsers that saved settings before the shared default existed.
+// Production always uses one deployment-owned backend on every device.
+// Explicit local endpoints remain available only for development/demo use.
 export function resolveBackendUrl(saved: unknown, fallback = buildDefault): string {
+  if(fallback)return fallback;
   return typeof saved === 'string' && saved.trim() && !isRetiredBackend(saved) ? saved.trim() : fallback;
 }

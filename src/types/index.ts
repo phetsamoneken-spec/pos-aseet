@@ -127,6 +127,7 @@ export interface AppSettings {
   warningThresholdPercent: number; // default: 80%
   syncMode: 'local' | 'gas';
   language: 'lo' | 'en';
+  dashboardTheme?: 'glass' | 'executive' | 'neon' | 'minimal' | 'luxury';
 }
 
 export interface DashboardMetrics {

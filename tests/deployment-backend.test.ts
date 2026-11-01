@@ -8,7 +8,8 @@ assert.equal(resolveBackendUrl('   ',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL)
 const retired='https://script.google.com/macros/s/AKfycbxt7FMAsx19pzuuMUB8xheP4aJtsZvjD_3W1qW5fjyZmvrgfIHCt7-TtC-QFwrCmiDu/exec';
 assert.equal(resolveBackendUrl(retired,DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'existing devices migrate from the retired URL');
 const custom='https://script.google.com/macros/s/custom-deployment/exec';
-assert.equal(resolveBackendUrl(' '+custom+' ',DEPLOYED_BACKEND_URL),custom);
+assert.equal(resolveBackendUrl(' '+custom+' ',DEPLOYED_BACKEND_URL),DEPLOYED_BACKEND_URL,'production uses one Admin-owned source on every device');
+assert.equal(resolveBackendUrl(custom,''),custom,'local development can still select an explicit endpoint');
 
 // Model the production default without enabling remote mode in local demo tests.
 INITIAL_SETTINGS.appsScriptUrl=DEPLOYED_BACKEND_URL;
@@ -44,8 +45,10 @@ assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL,'old blank
 assert.equal(storage.getCurrentUser(),null,'cached user without backend session must sign in again');
 local.set('mkt_settings_v1',JSON.stringify({...storage.getSettings(),appsScriptUrl:retired}));storage.init();
 assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL);
+assert.throws(()=>storage.updateSettings({appsScriptUrl:''}),/Admin permission/);
+storage.setCurrentUser({...user,id:'fixture-admin',username:'admin',role:'ADMIN',team:'ALL'});
 storage.updateSettings({appsScriptUrl:''});
 assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL);
 storage.updateSettings({appsScriptUrl:custom});storage.init();
-assert.equal(storage.getSettings().appsScriptUrl,custom,'preserve explicit Admin overrides');
+assert.equal(storage.getSettings().appsScriptUrl,DEPLOYED_BACKEND_URL,'browser overrides cannot split the production data source');
 console.log('PASS: fresh-device default backend, legacy blank settings, custom overrides, required server login, rejected password and successful Sheet account login.');

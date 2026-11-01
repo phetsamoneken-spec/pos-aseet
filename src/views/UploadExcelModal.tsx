@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { storage } from '../services/storage';
+import {GasService} from '../services/gasService';
 import { translations, Language } from '../locales/translations';
 
 interface UploadExcelModalProps {
@@ -35,6 +36,7 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [replaceAll, setReplaceAll] = useState(true);
   const [defaultBudget, setDefaultBudget] = useState(30000000);
+  const [importedCount,setImportedCount]=useState<number|null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -50,6 +52,8 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
   };
 
   const processFile = async (file: File) => {
+    if(!storage.canManageSettings())return;
+    setImportedCount(null);
     setErrorMsg(null);
     setFileName(file.name);
     setIsLoading(true);
@@ -88,21 +92,22 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
     }
   };
 
-  const handleConfirmImport = () => {
-    if (!parsedRows || parsedRows.length === 0) return;
-
-    setIsLoading(true);
-    const result = storage.importCustomersFromRawRows(parsedRows, {
-      replaceAll,
-      defaultAnnualBudget: defaultBudget
-    });
-    setIsLoading(false);
-
-    if (result.success) {
-      onSuccess(result.importedCount);
-    } else {
-      setErrorMsg(result.errors.join('\n') || 'Import failed.');
-    }
+  const handleConfirmImport = async () => {
+    if(!storage.canManageSettings()||isLoading||!parsedRows?.length)return;
+    setIsLoading(true);setErrorMsg(null);
+    try{
+      let count=importedCount;
+      if(count===null){
+        const result=storage.importCustomersFromRawRows(parsedRows,{replaceAll,defaultAnnualBudget:defaultBudget});
+        if(!result.success){setErrorMsg(result.errors.join('\n')||'Import failed');return;}
+        count=result.importedCount;setImportedCount(count);
+      }
+      if(storage.getSettings().appsScriptUrl){
+        const published=await GasService.syncAllToGoogleSheets();
+        if(!published.success){setErrorMsg('ນຳເຂົ້າໃນ browser ແລ້ວ ແຕ່ຍັງບໍ່ສົ່ງໄປ Sheet. ກົດລອງອີກຄັ້ງ: '+published.message);return;}
+      }
+      onSuccess(count);
+    }finally{setIsLoading(false);}
   };
 
   const handleDownloadTemplate = () => {
@@ -155,6 +160,7 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
     XLSX.writeFile(wb, 'MKT_Customer_Import_Template.xlsx');
   };
 
+  if(!storage.canManageSettings())return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
       <div className="w-full max-w-2xl rounded-3xl bg-white shadow-2xl border border-slate-100 overflow-hidden my-8 animate-in fade-in zoom-in-95">
@@ -299,13 +305,13 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
               <div>
                 <span className="text-xs font-bold text-slate-900 block">
                   {lang === 'lo'
-                    ? 'ລຶບລາຍຊື່ລູກຄ້າເກົ່າທັງໝົດແລ້ວແທນທີ່ດ້ວຍໄຟລ໌ນີ້ (Clean Replace)'
-                    : 'Replace all existing customers with records from this Excel file'}
+                    ? 'ໃຊ້ໄຟລ໌ນີ້ເປັນລາຍຊື່ຫຼັກ'
+                    : 'Use this file as the active customer master'}
                 </span>
                 <span className="text-[11px] text-slate-500">
                   {lang === 'lo'
-                    ? 'ຫາກເລືອກ, ລະບົບຈະລຶບຂໍ້ມູນເກົ່າອອກກ່ອນ ແລ້ວບັນທຶກຂໍ້ມູນຈາກໄຟລ໌ Excel ໃໝ່ທັງໝົດ.'
-                    : 'If checked, clears existing customer database and loads fresh records from this spreadsheet.'}
+                    ? 'ຮ້ານນອກໄຟລ໌ຈະຖືກເກັບເປັນປະຫວັດ. ລາຍຈ່າຍ ແລະຍອດໃຊ້ເດີມຍັງຢູ່. ນຳເຂົ້າແລ້ວຈະສົ່ງໄປ Sheet ກາງ.'
+                    : 'Stores outside the file are archived. Existing transactions and spending are retained. The import is then published to the shared Sheet.'}
                 </span>
               </div>
             </label>
@@ -358,7 +364,7 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
               ) : (
                 <Upload className="w-4 h-4" />
               )}
-              <span>{lang === 'lo' ? 'ຢືນຢັນການນຳເຂົ້າ Excel' : 'Import from Excel'}</span>
+              <span>{importedCount!==null ? (lang==='lo'?'ລອງສົ່ງໄປ Sheet ອີກຄັ້ງ':'Retry publishing to Sheet') : (lang === 'lo' ? 'ນຳເຂົ້າ ແລະສົ່ງໄປ Sheet' : 'Import and publish to Sheet')}</span>
             </button>
           </div>
 

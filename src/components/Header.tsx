@@ -11,6 +11,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { storage } from '../services/storage';
+import {GasService} from '../services/gasService';
 import { translations, Language } from '../locales/translations';
 import { PWAInstallButton } from './PWAInstallButton';
 import { Team, TEAMS } from '../types';
@@ -41,9 +42,11 @@ export const Header: React.FC<HeaderProps> = ({
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
 
-  const toggleLanguage = () => {
+  const toggleLanguage = async () => {
+    if(!storage.canManageSettings())return;
     const nextLang = lang === 'lo' ? 'en' : 'lo';
     storage.updateSettings({ language: nextLang });
+    if(storage.getSettings().appsScriptUrl){const result=await GasService.saveSharedSettings();if(!result.success)window.alert('Settings are not yet published: '+result.message);}
   };
 
   const isAdmin = currentUser?.role === 'ADMIN';
@@ -115,7 +118,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             {/* Google Sheets Link */}
-            <a
+            {isAdmin && <a
               href={`https://docs.google.com/spreadsheets/d/${settings.spreadsheetId}/edit`}
               target="_blank"
               rel="noopener noreferrer"
@@ -125,7 +128,7 @@ export const Header: React.FC<HeaderProps> = ({
               <FileSpreadsheet className="w-3.5 h-3.5" />
               <span>Google Sheet</span>
               <ExternalLink className="w-3 h-3 text-emerald-500" />
-            </a>
+            </a>}
 
             {/* GAS Backend Code Modal Button (Admin Only) */}
             {isAdmin && (
@@ -142,14 +145,14 @@ export const Header: React.FC<HeaderProps> = ({
             <PWAInstallButton language={lang} />
 
             {/* Language Switcher */}
-            <button
+            {isAdmin && <button
               onClick={toggleLanguage}
               className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition cursor-pointer"
               title="Switch Language (Lao / English)"
             >
               <Globe className="w-3.5 h-3.5 text-blue-400" />
               <span className="font-semibold">{lang === 'lo' ? 'ລາວ 🇱🇦' : 'EN 🇬🇧'}</span>
-            </button>
+            </button>}
 
             {/* User Profile Dropdown */}
             <div className="relative">

@@ -1,3 +1,5 @@
+> Admin-only import and shared settings: see [ADMIN-POLICY.md](ADMIN-POLICY.md). This release requires deploying the updated Code.gs.
+
 # Sheet → browser reads: see [READ-FROM-SHEETS.md](READ-FROM-SHEETS.md). The sections below describe the separate manual upload action.
 
 # User accounts: see [USER-ACCOUNTS.md](USER-ACCOUNTS.md) for private admin bootstrap and USERS synchronization.
@@ -20,7 +22,7 @@
 - Last submitted values win for matching IDs. This is not conflict resolution between multiple devices. Do not use simultaneous independent app copies as a shared live database.
 - A spreadsheet is not transactional across tabs. On a write failure, the response reports completed tabs and failure; retrying the same payload is safe by ID.
 - The retained legacy ADD_TRANSACTION / CANCEL_TRANSACTION / NEW_CONTRACT_CYCLE / UPDATE_BUDGET endpoints remain available. The app uses SYNC_BULK_DATA for this manual workflow.
-- User-account endpoints now require backend sign-in; legacy business-data endpoints retain their original authorization behavior. “Anyone” makes the endpoint writable by callers who have the URL. The app's Admin check is a browser UI check, not backend authorization; restrict the deployment and add server authentication before using this as a shared production database.
+- User-account endpoints now require backend sign-in; business publication requires Admin and legacy transaction endpoints check the stored team. “Anyone” makes the endpoint writable by callers who have the URL. The app's Admin check is a browser UI check, not backend authorization; restrict the deployment and add server authentication before using this as a shared production database.
 
 ## Verification
 

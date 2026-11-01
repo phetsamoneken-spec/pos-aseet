@@ -1,6 +1,7 @@
 import { accountRequest, clearRemoteSession, remoteSession, type AccountResponse } from './remoteAccounts';
 import { resolveBackendUrl, isRetiredBackend, DEPLOYED_BACKEND_URL } from '../config/backend';
 import { businessFingerprint, validateBusinessSnapshot, type BusinessSnapshot } from './businessData';
+import {sharedSettings, sharedSettingKeys} from './sharedSettings';
 /**
  * Local Data Storage and Business Logic Engine
  * Manages Persistence, Access Permissions, Budget Calculations, and Audit Logging
@@ -85,6 +86,27 @@ class StorageService {
   private sheetDataState: {status:'idle'|'loading'|'loaded'|'error'|'local';message:string} = {status:'idle',message:''};
 
   public getSheetDataState() { return this.sheetDataState; }
+  private applySharedResponse(result:AccountResponse,actor:User):User {
+    if(result.settingsVersion!==1)throw Error('Update Code.gs and deploy a new Web App version for shared Admin settings.');
+    const common=sharedSettings(result.settings),user=result.user||actor;
+    if(user.id!==actor.id || !['ADMIN','TEAM_USER'].includes(user.role) || user.role!=='ADMIN'&&!/^B[1-7]$/.test(user.team))throw Error('Invalid shared account scope');
+    if(user.role!=='ADMIN'||!safeGetItem('mkt_shared_settings_pending_v1'))this.settings={...this.settings,...common};
+    this.currentUser=user;safeSetItem(STORAGE_KEYS.AUTH,JSON.stringify(user));safeSetItem(STORAGE_KEYS.SETTINGS,JSON.stringify(this.settings));
+    return user;
+  }
+  public async refreshSharedSettings():Promise<{success:boolean;message:string}> {
+    const actor=this.currentUser,endpoint=this.settings.appsScriptUrl,token=remoteSession(endpoint)?.token;
+    if(!actor||!token)return {success:false,message:'Sign in first'};
+    try{
+      const result=await accountRequest(endpoint,'GET_SHARED_SETTINGS');
+      if(this.currentUser?.id!==actor.id||this.settings.appsScriptUrl!==endpoint||remoteSession(endpoint)?.token!==token)return {success:false,message:'Account changed'};
+      if(!result.success)throw Error(result.message||'Update Code.gs to load shared Admin settings.');
+      this.applySharedResponse(result,actor);this.recalculateContractStatuses();this.notify();return {success:true,message:'Shared Admin settings loaded'};
+    }catch(error){const message=error instanceof Error?error.message:String(error);this.sheetDataState={status:'error',message};this.notify();return {success:false,message};}
+  }
+  public markSharedSettingsPublished(published:unknown) {
+    if(JSON.stringify(sharedSettings(published))===JSON.stringify(sharedSettings(this.settings)))safeRemoveItem('mkt_shared_settings_pending_v1');
+  }
   private businessSnapshot(): BusinessSnapshot {
     return {customers:this.customers,conditions:this.conditions,contracts:this.contracts,budgets:this.budgets,transactions:this.transactions};
   }
@@ -122,13 +144,14 @@ class StorageService {
       const result=await accountRequest(endpoint,'GET_BUSINESS_DATA');
       if(sequence!==this.sheetLoadSequence)return {success:false,message:'Newer read started; old response ignored.'};
       if(this.currentUser?.id!==actor.id || this.settings.appsScriptUrl!==endpoint || remoteSession(endpoint)?.token!==token)return publish('error','Session changed. Please load from Sheet again.');
-      if(!result.success || result.dataVersion!==1){
+      if(!result.success || result.dataVersion!==1 || result.settingsVersion!==1){
         const error=result.message || result.error || '';
         if(result.success || /Unsupported action|Unknown action/.test(error))throw Error('ກະລຸນາໃຫ້ Admin ອັບເດດ Code.gs ແລະ Deploy → New version ກ່ອນໂຫຼດຂໍ້ມູນຈາກ Sheet.');
         throw Error(error || 'Could not load Sheet data');
       }
-      const scope=actor.role==='ADMIN'?'ALL':actor.team;
-      if(actor.role!=='ADMIN'&&!/^B[1-7]$/.test(scope))throw Error('Invalid assigned team');
+      const authoritativeUser=this.applySharedResponse(result,actor);
+      const scope=authoritativeUser.role==='ADMIN'?'ALL':authoritativeUser.team;
+      if(authoritativeUser.role!=='ADMIN'&&!/^B[1-7]$/.test(scope))throw Error('Invalid assigned team');
       if(result.scope!==scope)throw Error('Unexpected Sheet data scope');
       const data=validateBusinessSnapshot(result.snapshot,scope);
       if(before!==businessFingerprint(this.businessSnapshot()))return publish('local','ມີການແກ້ຂໍ້ມູນຂະນະກຳລັງໂຫຼດ. ແອັບເກັບການແກ້ໄຂໄວ້; ກະລຸນາ Sync ຫຼືສຳຮອງກ່ອນ.');
@@ -192,7 +215,7 @@ class StorageService {
         this.logs = JSON.parse(safeGetItem(STORAGE_KEYS.LOGS) || '[]');
 
         // Sheet imports preserve the actual financial values, including zero and negative balances.
-        if (!safeGetItem('mkt_sheet_business_baseline_v1')) {
+        if (!this.settings.appsScriptUrl && !safeGetItem('mkt_sheet_business_baseline_v1')) {
         // Synchronize and enforce formula: Annual Budget = Condition Quantity (crates) * Price per Crate
         const pricePerCrate = this.settings.pricePerCrate || 240000;
         let hasSyncChanges = false;
@@ -250,13 +273,13 @@ class StorageService {
         if (this.settings.appsScriptUrl) {
           this.customers=[];this.conditions=[];this.contracts=[];this.budgets=[];this.transactions=[];this.logs=[];
           this.persistAll();
-        } else this.resetToSeedData();
+        } else this.initializeSeedData();
       }
 
       this.recalculateContractStatuses();
     } catch (e) {
       console.error('Storage initialization failed, resetting defaults', e);
-      this.resetToSeedData();
+      this.initializeSeedData();
     }
   }
 
@@ -272,6 +295,10 @@ class StorageService {
   }
 
   public resetToSeedData() {
+    if(!this.canManageSettings())throw new Error('Admin permission required');
+    this.initializeSeedData();
+  }
+  private initializeSeedData() {
     const seed = generateSeedData();
     this.customers = seed.customers;
     this.conditions = seed.conditions;
@@ -441,6 +468,7 @@ class StorageService {
   public canManageUsers(): boolean {
     return this.currentUser?.role === 'ADMIN';
   }
+  public canManageSettings():boolean { return this.currentUser?.role==='ADMIN'; }
 
   // --- Settings ---
   public getSettings(): AppSettings {
@@ -464,6 +492,9 @@ class StorageService {
   }
 
   public updateSettings(newSettings: Partial<AppSettings>) {
+    if(!this.canManageSettings())throw new Error('Admin permission required');
+    sharedSettings(newSettings);
+    if(sharedSettingKeys.some(key=>newSettings[key]!==undefined&&newSettings[key]!==this.settings[key]))safeSetItem('mkt_shared_settings_pending_v1','true');
     this.settings = { ...this.settings, ...newSettings };
     this.settings.appsScriptUrl = resolveBackendUrl(this.settings.appsScriptUrl, INITIAL_SETTINGS.appsScriptUrl);
     const serialized = JSON.stringify(this.settings);
@@ -480,6 +511,7 @@ class StorageService {
   }
 
   public recalculateBudgetsByPricePerCrate(newPrice: number): { success: boolean; updatedCount: number } {
+    if(!this.canManageSettings())return {success:false,updatedCount:0};
     this.settings.pricePerCrate = Number(newPrice);
     let updatedCount = 0;
 
@@ -1261,6 +1293,7 @@ class StorageService {
     importedCount: number;
     errors: string[];
   } {
+    if(!this.canManageSettings())return {success:false,importedCount:0,errors:['Admin permission required']};
     const lines = csvText.trim().split(/\r?\n/);
     if (lines.length < 2) {
       return { success: false, importedCount: 0, errors: ['CSV file is empty or invalid'] };
@@ -1431,17 +1464,11 @@ class StorageService {
     importedCount: number;
     errors: string[];
   } {
+    if(!this.canManageSettings())return {success:false,importedCount:0,errors:['Admin permission required']};
     if (rows.length < 1) {
       return { success: false, importedCount: 0, errors: ['ໄຟລ໌ບໍ່ມີຂໍ້ມູນ (No rows found)'] };
     }
 
-    if (options.replaceAll) {
-      this.customers = [];
-      this.conditions = [];
-      this.contracts = [];
-      this.budgets = [];
-      this.transactions = [];
-    }
 
     const defaultBudget = options.defaultAnnualBudget || 30000000;
     const errors: string[] = [];
@@ -1482,6 +1509,17 @@ class StorageService {
       return defaultDate;
     };
 
+    const incomingCodes=new Set<string>();
+    for(let i=startIndex;i<rows.length;i++){
+      const row=rows[i];if(!row||row.every(cell=>String(cell??'').trim()===''))continue;
+      const code=String(row[1]||'').trim().toUpperCase();
+      if(!/^MDE-B[1-7]$/i.test(String(row[0]||'').trim()) || !code || !String(row[2]||'').trim() || incomingCodes.has(code) || !Number.isFinite(Number(row[3])) || Number(row[3])<0 || !parseDateValue(row[6],'') || !parseDateValue(row[7],'') || parseDateValue(row[6],'')>parseDateValue(row[7],'')){
+        errors.push(`Row ${i+1}: invalid team, customer, quantity, dates, or duplicate customer code`);
+      }
+      incomingCodes.add(code);
+    }
+    if(errors.length||!incomingCodes.size)return {success:false,importedCount:0,errors:errors.length?errors:['No customer rows found']};
+    if(options.replaceAll)this.customers.forEach(customer=>{if(!incomingCodes.has(customer.code))customer.status='DELETED';});
     const existingCodes = new Set(this.customers.map((c) => c.code.toUpperCase()));
 
     for (let i = startIndex; i < rows.length; i++) {
@@ -1533,6 +1571,7 @@ class StorageService {
           id: `CND-${customerCode}`,
           customerCode,
           conditionQuantity: condQtyRaw,
+          pricePerUnit:this.settings.pricePerCrate,
           conditionUOM: condUOM || 'Cartons',
           conditionProductDescription: condProdDesc || 'Standard Marketing Condition',
           updatedAt: new Date().toISOString()
@@ -1540,6 +1579,7 @@ class StorageService {
         this.conditions.push(condition);
       } else {
         condition.conditionQuantity = condQtyRaw;
+        condition.pricePerUnit=this.settings.pricePerCrate;
         condition.conditionUOM = condUOM || condition.conditionUOM;
         condition.conditionProductDescription = condProdDesc || condition.conditionProductDescription;
         condition.updatedAt = new Date().toISOString();
@@ -1564,9 +1604,7 @@ class StorageService {
         };
         this.contracts.push(contract);
 
-        const annualAmount = condQtyRaw > 0
-          ? condQtyRaw * (this.settings.pricePerCrate || 240000)
-          : (defaultBudget || 30000000);
+        const annualAmount = row[3] === '' || row[3] === undefined ? defaultBudget : condQtyRaw * this.settings.pricePerCrate;
 
         const budget: Budget = {
           id: budgetId,
@@ -1582,8 +1620,17 @@ class StorageService {
         };
         this.budgets.push(budget);
       } else {
+        contract.customerName=customerName;contract.team=team;
         contract.commencingOn = commencingOn;
         contract.expiringOn = expiringOn;
+        const budget=this.getContractBudget(contract.id);
+        if(budget){
+          budget.team=team;budget.annualAmount=row[3] === '' || row[3] === undefined ? defaultBudget : condQtyRaw*this.settings.pricePerCrate;
+          budget.remainingAmount=budget.annualAmount-budget.totalUsed;
+          budget.utilizationPercentage=budget.annualAmount>0?Math.round(budget.totalUsed/budget.annualAmount*1000)/10:0;
+          budget.status=budget.totalUsed>budget.annualAmount?'EXCEEDED':budget.utilizationPercentage>=100?'CRITICAL_100':budget.utilizationPercentage>=80?'WARNING_80':'NORMAL';
+          budget.updatedAt=new Date().toISOString();
+        }
       }
 
       importedCount++;

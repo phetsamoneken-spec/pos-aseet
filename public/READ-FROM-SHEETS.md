@@ -1,3 +1,5 @@
+> Admin-only import and shared settings: see [ADMIN-POLICY.md](ADMIN-POLICY.md). This release requires deploying the updated Code.gs.
+
 # ໂຫຼດຂໍ້ມູນລູກຄ້າຈາກ Sheet ໃນເຄື່ອງອື່ນ — 2026.11.01.8
 
 1. ເປີດ gas/Code.gs ຂອງສະບັບນີ້. ສຳຮອງ script ເກົ່າ ແລ້ວນຳໂຄດທັງໝົດແທນ Code.gs ໃນ Apps Script. ໃຊ້ໄຟລ໌ລວມນີ້ພຽງໄຟລ໌ດຽວ.
